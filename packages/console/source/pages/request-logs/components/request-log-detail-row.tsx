@@ -490,8 +490,9 @@ export function RequestLogDetailRow(props: RequestLogDetailRowProps) {
             </div>
           </div>
 
-          {/* 格子宽度由 `MetricCard` 自己钉住，容器只排间距：指标只有两三个时它们也还是
-              一排小格，不会被拉成铺满整行的灰带。 */}
+          {/* 一排指标块：格子之间只有一条竖线，底色一格都不铺（见 `MetricCard`）。
+              容器同样不铺底、不描边：详情里可能只有两三枚指标，容器一旦自己做一层底，
+              右边就会拖出一段没有内容的灰带——实测九枚 96px 的格子共 880px，容器却铺满整行。 */}
           <div className={METRIC_CARD_GRID_CLASS}>
             {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
           </div>

@@ -583,22 +583,23 @@ function TaskDetail(props: TestTaskDetailProps) {
   ]
   return (
     /*
-     * 展开区**不套盒子**。这一行本来就住在 `TableFrame` 的白卡里，再套一层描边
-     * 只是把一块白底隔成两块白底，中间多出四条细线；行与行之间再排一串 `divide-y`，
-     * 一整片看起来就是「灰底 + 很多道细线」，读数反而被线路淹了。
+     * 展开区不套外框：这一行本来就住在 `TableFrame` 的白卡里，再描一圈只是把一块白底
+     * 隔成两块、白添四条线。
      *
-     * 层次改由指标格那层填色承担：整块区域里唯一有色块的地方就是读数本身，
-     * 剩下的全靠留白分段落。第一格与上一行的间距把它和主行分开，
-     * 逐轮之间只留行高，不再画线。
+     * 但「不加外框」不等于「不加分界」。两段内容性质不同——上面是一组互不相干的读数，
+     * 下面是一张七列的表（列名对齐、逐行可扫）——混在一起没有分界时，读起来就是一片
+     * 漂着的小字，比有框的时候更难读。所以两段之间留一条发丝线，逐轮之间也留行分隔：
+     * 这是表的语法，不是装饰。要控的是**滑块总数**：两段之间 1 条 + 逐轮 N−1 条，
+     * 而不是外框一圈再叠一块灰底。
      */
-    <div className="col-span-full pb-0.5">
+    <div className="col-span-full">
       <div className={METRIC_CARD_GRID_CLASS}>
         {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
       </div>
 
-      <div className="mt-2">
+      <div className="mt-3 border-t border-border/50 pt-1.5">
         {/* 逐轮的列名只说一次：七组读数按列对齐之后，「哪一轮的首字最慢」才扫得出来。 */}
-        <div className={cn('hidden items-baseline gap-3 system-2xs-regular text-text-quaternary md:grid', ROUND_GRID_COLUMNS)}>
+        <div className={cn('hidden items-baseline gap-3 py-1 system-2xs-regular text-text-quaternary md:grid', ROUND_GRID_COLUMNS)}>
           <span>{t('modelTest.detail.roundColumn')}</span>
           <span>{t('modelTest.table.status')}</span>
           <span>{t('modelTest.detail.httpStatus')}</span>
@@ -607,36 +608,37 @@ function TaskDetail(props: TestTaskDetailProps) {
           <span className="text-right">{t('modelTest.detail.tps')}</span>
           <span className="text-right">{t('modelTest.detail.outputTokens')}</span>
         </div>
-        {rounds.map(round => (
-          <div key={round.round} className="py-1">
-            {/* 窄屏回到两列网格，每个格子自带标签（`TaskCell` 的 `labelKey`），
-                与上面那张结果表用的是同一条降级规则，不另设一套。 */}
-            <div className={cn('grid grid-cols-2 gap-x-3 gap-y-1.5 system-2xs-regular md:items-baseline md:gap-y-0', ROUND_GRID_COLUMNS)}>
-              {/* 轮次自带说明（「第 N 轮」本身就是一个标签），就不再给它加一格窄屏标签。 */}
-              <span className="font-mono tabular-nums text-text-quaternary">{t('modelTest.detail.round', { round: round.round })}</span>
-              <TaskCell labelKey="modelTest.table.status">
-                <span className={cn('system-2xs-medium', round.success ? 'text-text-success' : 'text-text-destructive')}>
-                  {t(TASK_STATUS_LABEL_KEYS[round.success ? 'success' : 'failed'])}
-                </span>
-              </TaskCell>
-              <TaskCell labelKey="modelTest.detail.httpStatus">
-                <span className="font-mono tabular-nums">{round.statusCode ?? '—'}</span>
-              </TaskCell>
-              <TaskCell labelKey="modelTest.detail.ttft" align="end">{formatMilliseconds(round.ttftMilliseconds)}</TaskCell>
-              <TaskCell labelKey="modelTest.detail.duration" align="end">{formatMilliseconds(round.durationMilliseconds)}</TaskCell>
-              <TaskCell labelKey="modelTest.detail.tps" align="end">{formatOutputSpeed(round.tokensPerSecond)}</TaskCell>
-              <TaskCell labelKey="modelTest.detail.outputTokens" align="end">{formatTokenCount(round.outputTokens)}</TaskCell>
-            </div>
-            {/* 失败那一轮的原话单独占一行：它通常很长（上游把整个 JSON 错误体回过来），
-                挤在指标后面会把那一行撑成乱码一样的窄柱。成功轮不印这一行，避免「无错误」刷屏。
-                这是整块展开区里唯一保留描边的东西——错误是一个需要被看见的事件，不是一个读数。 */}
-            {!round.success && (
-              <div className="mt-1 wrap-break-word rounded-md bg-destructive/8 px-2 py-1.5 font-mono system-2xs-regular leading-4 text-text-destructive">
-                {round.errorMessage || t('modelTest.detail.noError')}
+        <div className="divide-y divide-border/40">
+          {rounds.map(round => (
+            <div key={round.round} className="py-1.5">
+              {/* 窄屏回到两列网格，每个格子自带标签（`TaskCell` 的 `labelKey`），
+                  与上面那张结果表用的是同一条降级规则，不另设一套。 */}
+              <div className={cn('grid grid-cols-2 gap-x-3 gap-y-1.5 system-2xs-regular md:items-baseline md:gap-y-0', ROUND_GRID_COLUMNS)}>
+                {/* 轮次自带说明（「第 N 轮」本身就是一个标签），就不再给它加一格窄屏标签。 */}
+                <span className="font-mono tabular-nums text-text-quaternary">{t('modelTest.detail.round', { round: round.round })}</span>
+                <TaskCell labelKey="modelTest.table.status">
+                  <span className={cn('system-2xs-medium', round.success ? 'text-text-success' : 'text-text-destructive')}>
+                    {t(TASK_STATUS_LABEL_KEYS[round.success ? 'success' : 'failed'])}
+                  </span>
+                </TaskCell>
+                <TaskCell labelKey="modelTest.detail.httpStatus">
+                  <span className="font-mono tabular-nums">{round.statusCode ?? '—'}</span>
+                </TaskCell>
+                <TaskCell labelKey="modelTest.detail.ttft" align="end">{formatMilliseconds(round.ttftMilliseconds)}</TaskCell>
+                <TaskCell labelKey="modelTest.detail.duration" align="end">{formatMilliseconds(round.durationMilliseconds)}</TaskCell>
+                <TaskCell labelKey="modelTest.detail.tps" align="end">{formatOutputSpeed(round.tokensPerSecond)}</TaskCell>
+                <TaskCell labelKey="modelTest.detail.outputTokens" align="end">{formatTokenCount(round.outputTokens)}</TaskCell>
               </div>
-            )}
-          </div>
-        ))}
+              {/* 失败那一轮的原话单独占一行：它通常很长（上游把整个 JSON 错误体回过来），
+                  挤在指标后面会把那一行撑成乱码一样的窄柱。成功轮不印这一行，避免「无错误」刷屏。 */}
+              {!round.success && (
+                <div className="mt-1.5 wrap-break-word rounded-md bg-destructive/8 px-2 py-1.5 font-mono system-2xs-regular leading-4 text-text-destructive">
+                  {round.errorMessage || t('modelTest.detail.noError')}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )
