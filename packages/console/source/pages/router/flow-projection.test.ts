@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { WorkflowEdge, WorkflowGraph, WorkflowNodeKind, WorkflowNodeModel } from '@common/router/types'
 import { NODE_KIND_ORDER, EDGE_STROKE_NORMAL } from './node-meta'
-import { buildFlowEdges, layoutRouterNodes } from './flow-projection'
+import { buildFlowEdges, buildFlowNodes, layoutRouterNodes, toCanvasGraph, type FlowNodeHandlers } from './flow-projection'
 
 /** 布局只读 id / kind / position，其余字段与这两条断言无关。 */
 function node(id: string, kind: WorkflowNodeKind, x: number, y: number): WorkflowNodeModel {
@@ -146,5 +146,114 @@ describe('buildFlowEdges', () => {
     const onInsert = vi.fn()
     const built = buildFlowEdges(graph(nodes, [edge('e', 'in', 'out')]), { onInsert })
     expect(built[0]!.data!.onInsert).toBe(onInsert)
+  })
+})
+
+describe('toCanvasGraph', () => {
+  it('补齐固定节点文案并按分层算法重排坐标', () => {
+    const clustered = graph([node('in', 'input', 0, 0), node('out', 'output', 0, 0)])
+    const canvas = toCanvasGraph(clustered)
+    expect(canvas.nodes.map(item => item.id)).toEqual(['in', 'out'])
+    // 同一点上的两个节点会被分列排开（与 `layoutRouterNodes` 同一条算法）。
+    expect(canvas.nodes[0].position).not.toEqual(canvas.nodes[1].position)
+    expect(canvas.edges).toBe(clustered.edges)
+  })
+
+  it('用户自己排好的版不动：坐标原样保留', () => {
+    const spread = graph([node('in', 'input', 0, 0), node('out', 'output', 900, 700)])
+    expect(toCanvasGraph(spread).nodes.map(item => item.position)).toEqual([{ x: 0, y: 0 }, { x: 900, y: 700 }])
+  })
+})
+
+describe('buildFlowNodes', () => {
+  const handlers: FlowNodeHandlers = {
+    onOpen: vi.fn(),
+    onUpdateNode: vi.fn(),
+    onResizeNode: vi.fn(),
+    onRequestInsert: vi.fn(),
+    onDeleteNode: vi.fn(),
+    onDuplicateNode: vi.fn(),
+  }
+
+  /** 固定的一批节点对象：复用只可能发生在「模型引用没变」的前提下。 */
+  const NODES = [node('a', 'input', 0, 0), node('b', 'condition', 0, 0)]
+
+  function build(overrides: Partial<Parameters<typeof buildFlowNodes>[0]> = {}) {
+    return buildFlowNodes({
+      nodes: NODES,
+      edges: [],
+      selectedNodeId: null,
+      draggable: true,
+      runStatusByNode: new Map(),
+      measure: () => undefined,
+      handlers,
+      cache: new Map(),
+      ...overrides,
+    })
+  }
+
+  it('每个节点带上画布要的字段：类型、位置、选中态、运行状态、端口占用', () => {
+    const built = build({
+      edges: [edge('e1', 'a', 'b', 'out'), edge('e2', 'a', 'b', 'second')],
+      selectedNodeId: 'a',
+      runStatusByNode: new Map([['b', 'failed' as const]]),
+    })
+
+    expect(built.nodes.map(item => item.type)).toEqual(['route-input', 'condition'])
+    expect(built.nodes[0].position).toEqual({ x: 0, y: 0 })
+    expect(built.nodes[0].data).toMatchObject({
+      isSelected: true,
+      runStatus: 'idle',
+      // 同一个端口出现两次只算一次。
+      connectedSourcePorts: ['out', 'second'],
+      targetConnected: false,
+      canInsert: true,
+      ...handlers,
+    })
+    expect(built.nodes[1].data).toMatchObject({ isSelected: false, runStatus: 'failed', targetConnected: true })
+  })
+
+  it('没变的节点复用同一个对象，React Flow 的状态机才不被打断', () => {
+    const first = build()
+    const second = build({ cache: first.cache })
+    expect(second.nodes[0]).toBe(first.nodes[0])
+  })
+
+  it('选中态、可拖动、运行状态变化都会重建节点', () => {
+    const first = build()
+    const selected = build({ cache: first.cache, selectedNodeId: 'a' })
+    expect(selected.nodes[0]).not.toBe(first.nodes[0])
+
+    const locked = build({ cache: first.cache, draggable: false })
+    expect(locked.nodes[0]).not.toBe(first.nodes[0])
+
+    const ran = build({ cache: first.cache, runStatusByNode: new Map([['a', 'succeeded' as const]]) })
+    expect(ran.nodes[0]).not.toBe(first.nodes[0])
+    expect(ran.nodes[0].data!.runStatus).toBe('succeeded')
+  })
+
+  it('量到的尺寸参与缓存键：尺寸变了必须重建，否则拖动会丢尺寸（error015）', () => {
+    const first = build()
+    const measuredAway = build({ cache: first.cache, measure: () => ({ width: 240, height: 120 }) })
+    expect(measuredAway.nodes[0]).not.toBe(first.nodes[0])
+    expect(measuredAway.nodes[0].measured).toEqual({ width: 240, height: 120 })
+
+    const same = build({ cache: measuredAway.cache, measure: () => ({ width: 240, height: 120 }) })
+    expect(same.nodes[0]).toBe(measuredAway.nodes[0])
+  })
+
+  it('便签的尺寸来自图数据本身，同时写进 measured 与 style', () => {
+    const note = { ...node('n', 'note', 0, 0), size: { width: 300, height: 200 } } as unknown as WorkflowNodeModel
+    const built = build({ nodes: [note] as WorkflowNodeModel[] })
+    expect(built.nodes[0].measured).toEqual({ width: 300, height: 200 })
+    expect(built.nodes[0].style).toEqual({ width: 300, height: 200 })
+  })
+
+  it('端口占用变化会重建：连线接上了就要重画那个节点', () => {
+    const first = build()
+    const connected = build({ cache: first.cache, edges: [edge('e', 'a', 'b')] })
+    expect(connected.nodes[0]).not.toBe(first.nodes[0])
+    expect(connected.nodes[0].data!.targetConnected).toBe(false)
+    expect(connected.nodes[1].data!.targetConnected).toBe(true)
   })
 })

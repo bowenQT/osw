@@ -9,50 +9,25 @@ import {
   type Connection,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import {
-  ArrowRight,
-  CirclePlay,
-  Hand,
-  Lock,
-  LockOpen,
-  LocateFixed,
-  MousePointer2,
-  Plus,
-  Save,
-} from 'lucide-react'
-
 import { routerApi } from '@/api/router'
 import { unwrap } from '@/api/unwrap'
-import { PageContent, PageHeader, PageLayout } from '@/components/layout'
-import { Badge } from '@/components/ui/badge'
+import { PageContent, PageLayout } from '@/components/layout'
 import { Card } from '@/components/ui/card'
-import {
-  Drawer,
-  DrawerContent,
-  DrawerDescription,
-  DrawerFooter,
-  DrawerHeader,
-  DrawerTitle,
-} from '@/components/ui/drawer'
-import { Separator } from '@/components/ui/separator'
-import { Textarea } from '@/components/ui/textarea'
 import { useToast } from '@/components/ui/toast'
 import { useLogicalModels } from '@/data/logical-models'
 import { useRouteMode } from '@/hooks/use-route-mode'
 import { useTranslation } from '@/i18n/provider'
-import { cn } from '@/lib/utils'
 
-import { NodeSelector } from './components/node-selector'
-import { WorkflowButton } from './components/workflow-button'
-import { PolicyMenu } from './components/policy-menu'
-import { RouteModeSwitch } from './components/route-mode-switch'
 import { SaveVersionDialog, type VersionDraft } from './components/save-version-dialog'
-import { VersionMenu } from './components/version-menu'
+import { WorkflowCanvasDock } from './components/workflow-canvas-dock'
 import { WorkflowConnectionLine } from './components/workflow-connection-line'
 import { WorkflowNodePanel } from './components/workflow-node-panel'
+import { WorkflowRunDrawer } from './components/workflow-run-drawer'
+import { WorkflowStudioHeader } from './components/workflow-studio-header'
 import { resolveInputHints } from './field-hints'
 import { policyPresetTextKeys } from './policy-preset-text'
-import { buildFlowEdges, layoutRouterNodes, type WorkflowFlowEdge } from './flow-projection'
+import { buildFlowEdges, buildFlowNodes, toCanvasGraph, type FlowNodeCache, type WorkflowFlowEdge } from './flow-projection'
+import { buildRunStatusByNode, groupNodeOutputs } from './node-output'
 import { hasSavedVersion, toRouterGraphVersion, toRouterGraphVersions, type RouteVersion } from './route-versions'
 import { RouteRulesStudio } from './rules/rules-studio'
 import {
@@ -72,15 +47,10 @@ import {
   removeEdges,
   removeNode,
   resolveInsertAnchor,
+  resolveInsertPosition,
 } from './graph-ops'
-import {
-  displayWorkflowNode,
-  isProtectedNode,
-  localizeNewNode,
-  resolveNoteNodeSize,
-  toCanvasNodeType,
-} from './node-meta'
-import type { NodeInsertRequest, NodeRunStatus, RouteFlowNode } from './node-data'
+import { displayWorkflowNode, isProtectedNode, localizeNewNode } from './node-meta'
+import type { NodeInsertRequest, RouteFlowNode } from './node-data'
 import { edgeTypes, nodeTypes } from './node-registry'
 import type { AppendableKind, NodePosition, NoteNodeSize, WorkflowGraph, WorkflowNodeModel, WorkflowRunResult } from '@common/router/types'
 
@@ -93,37 +63,6 @@ const EMPTY_VERSION_DRAFT: VersionDraft = { name: '', description: '' }
 /** 内建默认策略的 id：一版都没保存过时，代理跑的就是它，画布铺的也是这张图。 */
 const DEFAULT_POLICY_PRESET_ID = ROUTER_POLICY_PRESETS.find(preset => preset.isDefault)?.id
 const WORKFLOW_FIT_VIEW_OPTIONS = { padding: 0.04, minZoom: 0.66, maxZoom: 1 }
-
-/** 单条节点输出的值转成一行文本：字符串直出，数组用逗号连接，其余走 JSON。 */
-function formatNodeOutputValue(value: unknown): string {
-  if (value === null || value === undefined) return '—'
-  if (typeof value === 'string') return value.length === 0 ? '—' : value
-  if (typeof value === 'boolean' || typeof value === 'number') return String(value)
-  if (Array.isArray(value)) {
-    if (value.length === 0) return '—'
-    return value.map(item => (typeof item === 'string' ? item : JSON.stringify(item))).join(', ')
-  }
-  return JSON.stringify(value)
-}
-
-/** 服务端返回的图直接铺到画布上：补齐固定节点文案，并按分层算法重排坐标。 */
-function toCanvasGraph(graph: WorkflowGraph): WorkflowGraph {
-  return { ...graph, nodes: withFixedNodeCopy(layoutRouterNodes(graph.nodes)) }
-}
-
-/** 插入节点的落点：在两端点之间取中点，否则排在来源节点右侧。 */
-function resolveInsertPosition(source: WorkflowNodeModel | null, target: WorkflowNodeModel | null): NodePosition {
-  if (source && target) {
-    return {
-      x: Math.round((source.position.x + target.position.x) / 2),
-      y: Math.round((source.position.y + target.position.y) / 2),
-    }
-  }
-  if (source) {
-    return { x: source.position.x + 320, y: source.position.y }
-  }
-  return { x: 0, y: 0 }
-}
 
 function WorkflowStudioCanvas() {
   const flow = useReactFlow<RouteFlowNode, WorkflowFlowEdge>()
@@ -469,91 +408,34 @@ function WorkflowStudioCanvas() {
 
   // ---- React Flow 数据 ----------------------------------------------------
 
-  const runStatusByNode = useMemo(() => {
-    const map = new Map<string, NodeRunStatus>()
-    if (!runResult) return map
-    runResult.trace.forEach(item => map.set(item.nodeId, item.success ? 'succeeded' : 'failed'))
-    return map
-  }, [runResult])
+  const runStatusByNode = useMemo(() => buildRunStatusByNode(runResult), [runResult])
+  const nodeOutputGroups = useMemo(() => groupNodeOutputs(displayNodes, runResult), [displayNodes, runResult])
 
   /**
-   * 运行结果按节点分组呈现。
-   * 数据本身挂在节点 id 上（同一节点可能产出多条），所以这里只负责把 id 翻译成节点名称。
+   * 画布上的节点对象。缓存与缓存键都在 `buildFlowNodes` 里：没变的节点复用同一个对象，
+   * React Flow 的状态机才不会被每帧的新对象打断（细节见 `flow-projection.ts`）。
    */
-  const nodeOutputGroups = useMemo(() => {
-    if (!runResult) return []
-    const nameById = new Map(displayNodes.map(node => [node.id, node.name]))
-    return Object.entries(runResult.nodeOutputs).map(([nodeId, outputs]) => ({
-      nodeId,
-      nodeName: nameById.get(nodeId) ?? nodeId,
-      outputs,
-    }))
-  }, [displayNodes, runResult])
-
-  const nodeCacheRef = useRef(new Map<string, { model: WorkflowNodeModel; flags: string; node: RouteFlowNode }>())
-
-  const flowNodes = useMemo<RouteFlowNode[]>(() => {
-    const draggable = dragEnabled && dockMode === 'select'
-    const previous = nodeCacheRef.current
-    const next = new Map<string, { model: WorkflowNodeModel; flags: string; node: RouteFlowNode }>()
-
-    const nodes = displayNodes.map(model => {
-        const sourcePorts = graph.edges
-          .filter(edge => edge.sourceNodeId === model.id)
-          .map(edge => String(edge.sourcePort))
-        const targetConnected = graph.edges.some(edge => edge.targetNodeId === model.id)
-        const runStatus = runStatusByNode.get(model.id) ?? 'idle'
-        // 尺寸必须参与缓存键：React Flow 是异步量节点的，首帧量到的是 undefined，
-        // 之后才拿到真实尺寸。不把它算进来的话，缓存会一直拿首次那个 `measured: undefined` 的对象，
-        // 后续 `adoptUserNodes` 重建内部节点时尺寸就被抹平（拖动时报 error015、fitView 拿到 0 尺寸）。
-        const measured = flow.getInternalNode(model.id)?.measured
-        // 便签是唯一一个尺寸不等于内容的节点：它的大小由 `model.size` 说了算，
-        // 所以要把尺寸同时写成 `measured` 与节点样式（`getNodeInlineStyleDimensions` 只认 style / width，不认 measured）。
-        // 其余节点不写 style，宽度交给卡片自己（`w-60`）。
-        const noteSize = model.kind === 'note' ? resolveNoteNodeSize(model) : null
-        const noteDimensions = noteSize ? { width: noteSize.width, height: noteSize.height } : undefined
-        const flags = `${model.id === selectedNodeId}|${draggable}|${runStatus}|${sourcePorts.join(',')}|${targetConnected}|${measured?.width ?? 0}x${measured?.height ?? 0}`
-
-        const cached = previous.get(model.id)
-        if (cached && cached.model === model && cached.flags === flags) {
-          next.set(model.id, cached)
-          return cached.node
-        }
-
-        const node: RouteFlowNode = {
-          id: model.id,
-          type: toCanvasNodeType(model.kind),
-          position: model.position,
-          // React Flow 把量到的尺寸记在 internal node 上，而 `adoptUserNodes` 重建内部节点时
-          // 会直接取用户节点对象的 `measured`。这里重建对象（例如拖动时每帧写回位置）如果不把
-          // 尺寸带回来，尺寸会被重置成 undefined：`calculateNodePosition` 会打印 error015
-          // （“trying to drag a node that is not initialized”），框选 / fitView 等几何计算
-          // 也会拿到 0 尺寸。
-          measured: noteDimensions ?? measured,
-          style: noteDimensions,
-          draggable,
-          data: {
-            model,
-            isSelected: model.id === selectedNodeId,
-            runStatus,
-            connectedSourcePorts: [...new Set(sourcePorts)],
-            targetConnected,
-            canInsert: true,
-            onOpen: handleOpenNode,
-            onUpdateNode: updateNode,
-            onResizeNode: handleResizeNode,
-            onRequestInsert: handleRequestInsert,
-            onDeleteNode: handleDeleteNode,
-            onDuplicateNode: handleDuplicateNode,
-          },
-        }
-
-        next.set(model.id, { model, flags, node })
-        return node
-      })
-
-    nodeCacheRef.current = next
-    return nodes
+  const nodeCacheRef = useRef<FlowNodeCache>(new Map())
+  const flowNodes = useMemo(() => {
+    const built = buildFlowNodes({
+      nodes: displayNodes,
+      edges: graph.edges,
+      selectedNodeId,
+      draggable: dragEnabled && dockMode === 'select',
+      runStatusByNode,
+      measure: nodeId => flow.getInternalNode(nodeId)?.measured,
+      cache: nodeCacheRef.current,
+      handlers: {
+        onOpen: handleOpenNode,
+        onUpdateNode: updateNode,
+        onResizeNode: handleResizeNode,
+        onRequestInsert: handleRequestInsert,
+        onDeleteNode: handleDeleteNode,
+        onDuplicateNode: handleDuplicateNode,
+      },
+    })
+    nodeCacheRef.current = built.cache
+    return built.nodes
   }, [
     dragEnabled,
     dockMode,
@@ -722,26 +604,14 @@ function WorkflowStudioCanvas() {
 
   return (
     <PageLayout className="flex h-full min-h-0 flex-col">
-      <PageHeader
-        title={t('router.workflow.title')}
-        // 模式切换紧跟在标题后面：它在回答「这个标题指的是哪一种定义」，而不是一个页面动作。
-        titleAdornment={<RouteModeSwitch />}
-        description={t('router.workflow.description')}
-        // 说明文案保持单行截断：标题栏高度固定，画布高度才不会随文案换行变化。
-        className="[&_p]:truncate"
-        actions={(
-          // 标题栏不提供 gap，两个按钮直接放在 Fragment 里会贴在一起。
-          <div className="flex items-center gap-2">
-            <PolicyMenu activePolicyId={activePolicyId} onApply={applyPolicy} />
-            <WorkflowButton size="medium" onClick={() => setTestDrawerOpen(true)}>
-              <CirclePlay className="size-3.5" aria-hidden /> {t('router.workflow.run')}
-            </WorkflowButton>
-            <WorkflowButton size="medium" variant="primary" onClick={() => setSaveDialogOpen(true)} disabled={!canSaveWorkflow}>
-              <Save className="size-3.5" aria-hidden /> {t('router.save')}
-            </WorkflowButton>
-            <VersionMenu versions={versions} itemUnitKey="router.version.unit.nodes" onRestore={restoreVersion} />
-          </div>
-        )}
+      <WorkflowStudioHeader
+        activePolicyId={activePolicyId}
+        canSave={canSaveWorkflow}
+        versions={versions}
+        onApplyPolicy={applyPolicy}
+        onRestoreVersion={restoreVersion}
+        onOpenRun={() => setTestDrawerOpen(true)}
+        onOpenSave={() => setSaveDialogOpen(true)}
       />
 
       <PageContent className="flex min-h-0 flex-1 flex-col">
@@ -798,72 +668,14 @@ function WorkflowStudioCanvas() {
               <Controls className="router-controls" showInteractive={false} />
             </ReactFlow>
 
-            <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
-              {/* 容器样式对齐上游 `workflow/operator/control.tsx` 的悬浮控制条：
-                  actionbar 底色与画布只差一档明度，因此保留上游的 0.5px 描边、省略阴影。 */}
-              <div className="pointer-events-auto inline-flex max-w-full items-center gap-0.5 rounded-lg border-[0.5px] border-components-actionbar-border bg-components-actionbar-bg p-0.5 text-text-tertiary backdrop-blur-[5px]">
-                <NodeSelector
-                  placement="top"
-                  onSelect={appendAtCanvasCenter}
-                  trigger={(
-                    <button
-                      type="button"
-                      aria-label={t('router.canvas.addNodeAria')}
-                      className="flex size-8 items-center justify-center rounded-lg text-text-tertiary transition-colors hover:bg-state-base-hover hover:text-text-secondary"
-                    >
-                      <Plus className="size-3.5" aria-hidden />
-                    </button>
-                  )}
-                />
-
-                <Separator orientation="vertical" className="mx-1!" />
-
-                <button
-                  type="button"
-                  aria-label={t('router.canvas.selectModeAria')}
-                  className={cn(
-                    'flex size-8 items-center justify-center rounded-lg transition-colors',
-                    dockMode === 'select' ? 'bg-state-accent-solid text-components-button-primary-text' : 'text-text-tertiary hover:bg-state-base-hover hover:text-text-secondary',
-                  )}
-                  onClick={() => setDockMode('select')}
-                >
-                  <MousePointer2 className="size-3.5" aria-hidden />
-                </button>
-                <button
-                  type="button"
-                  aria-label={t('router.canvas.panModeAria')}
-                  className={cn(
-                    'flex size-8 items-center justify-center rounded-lg transition-colors',
-                    dockMode === 'pan' ? 'bg-state-accent-solid text-components-button-primary-text' : 'text-text-tertiary hover:bg-state-base-hover hover:text-text-secondary',
-                  )}
-                  onClick={() => setDockMode('pan')}
-                >
-                  <Hand className="size-3.5" aria-hidden />
-                </button>
-                <button
-                  type="button"
-                  aria-label={dragEnabled ? t('router.canvas.lockAria') : t('router.canvas.unlockAria')}
-                  className={cn(
-                    'flex size-8 items-center justify-center rounded-lg transition-colors',
-                    dragEnabled ? 'text-text-tertiary hover:bg-state-base-hover hover:text-text-secondary' : 'bg-state-accent-solid text-components-button-primary-text',
-                  )}
-                  onClick={() => setDragEnabled(value => !value)}
-                >
-                  {dragEnabled ? <LockOpen className="size-3.5" aria-hidden /> : <Lock className="size-3.5" aria-hidden />}
-                </button>
-
-                <Separator orientation="vertical" className="mx-1!" />
-
-                <button
-                  type="button"
-                  aria-label={t('router.canvas.fitViewAria')}
-                  className="flex size-8 items-center justify-center rounded-lg text-text-tertiary transition-colors hover:bg-state-base-hover hover:text-text-secondary"
-                  onClick={() => void flow.fitView(WORKFLOW_FIT_VIEW_OPTIONS)}
-                >
-                  <LocateFixed className="size-3.5" aria-hidden />
-                </button>
-              </div>
-            </div>
+            <WorkflowCanvasDock
+              mode={dockMode}
+              dragEnabled={dragEnabled}
+              onModeChange={setDockMode}
+              onToggleDrag={() => setDragEnabled(value => !value)}
+              onFitView={() => void flow.fitView(WORKFLOW_FIT_VIEW_OPTIONS)}
+              onAppendNode={appendAtCanvasCenter}
+            />
 
             {selectedNode && (
               <WorkflowNodePanel
@@ -883,98 +695,17 @@ function WorkflowStudioCanvas() {
         </Card>
       </PageContent>
 
-      <Drawer open={testDrawerOpen} onOpenChange={setTestDrawerOpen} direction="right">
-        <DrawerContent className="workflow-test-drawer workflow-ui-surface h-full w-208! max-w-[90vw]! border-l-[0.5px] border-components-panel-border bg-background">
-          <DrawerHeader>
-            <DrawerTitle className="flex items-center gap-2"><ArrowRight className="size-4" /> {t('router.workflow.run')}</DrawerTitle>
-            <DrawerDescription>{t('router.runPanel.description')}</DrawerDescription>
-          </DrawerHeader>
-
-          {/* 输入与结果共用一个滚动容器：窗口变小时整体滚动，
-              而不是输入区、结果区各滚各的（结果里的 Trace 也不再单独滚动）。 */}
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-            <div className="flex flex-col gap-2">
-              <div className="py-1 system-sm-medium text-text-secondary">{t('router.runPanel.inputTitle')}</div>
-              <Textarea
-                value={payloadText}
-                onChange={event => setPayloadText(event.target.value)}
-                rows={payloadRows}
-                className="min-h-24 resize-none font-mono text-[12px] leading-5"
-              />
-              {payloadError && <div className="system-xs-regular text-text-destructive">{payloadError}</div>}
-            </div>
-
-            <div className="flex flex-col gap-3">
-              <div className="py-1 system-sm-medium text-text-secondary">{t('router.runPanel.resultTitle')}</div>
-              {!runResult && <div className="rounded-lg border border-module-border bg-workflow-block-parma-bg p-3 system-xs-regular text-text-tertiary">{t('router.runPanel.emptyResult')}</div>}
-
-              {runResult && (
-                <>
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <Badge variant={runResult.stopReason === 'output' ? 'success' : 'warning'}>
-                      {t('router.runPanel.routeStatus')}{runResult.stopReason === 'output' ? t('router.runPanel.reachedOutput') : runResult.stopReason}
-                    </Badge>
-                    <Badge variant="info">{t('router.runPanel.protocol')}{runResult.protocol}</Badge>
-                    <Badge variant="muted">{t('router.runPanel.nodeCount')}{runResult.trace.length}</Badge>
-                  </div>
-                  <div className="space-y-1.5 rounded-lg border border-module-border bg-workflow-block-parma-bg p-2">
-                    <div className="system-2xs-medium-uppercase text-text-tertiary">{t('router.runPanel.nodeOutputs')}</div>
-                    {nodeOutputGroups.length === 0
-                      ? <div className="system-xs-regular text-text-tertiary">{t('router.runPanel.noNodeOutputs')}</div>
-                      : (
-                        <div className="space-y-1.5">
-                          {nodeOutputGroups.map(group => (
-                            <div key={group.nodeId} className="rounded-md border border-module-border bg-workflow-block-bg p-2">
-                              <div className="mb-1 flex items-center gap-2">
-                                <span className="system-xs-medium text-text-primary">{group.nodeName}</span>
-                                <span className="font-mono system-2xs-regular text-text-tertiary">{group.nodeId}</span>
-                              </div>
-                              <div className="space-y-0.5">
-                                {group.outputs.map((output, index) => (
-                                  <div key={`${output.name}-${index}`} className="flex items-start gap-2">
-                                    <span className="shrink-0 system-xs-regular text-text-tertiary">{output.name}</span>
-                                    <span className="min-w-0 flex-1 break-all font-mono system-2xs-regular text-text-secondary">
-                                      {formatNodeOutputValue(output.value)}
-                                    </span>
-                                    {output.note && <Badge variant="muted">{output.note}</Badge>}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                  </div>
-                  <div className="rounded-lg border border-module-border bg-workflow-block-parma-bg p-2 font-mono system-2xs-regular">
-                    <div className="mb-1 system-2xs-medium-uppercase text-text-tertiary">{t('router.runPanel.output')}</div>
-                    <pre className="whitespace-pre-wrap break-all">{JSON.stringify(runResult.outputPayload, null, 2)}</pre>
-                  </div>
-                  <div className="space-y-1.5 rounded-lg border border-module-border bg-workflow-block-parma-bg p-2">
-                    <div className="system-2xs-medium-uppercase text-text-tertiary">{t('router.runPanel.trace')}</div>
-                    <div className="space-y-1.5">
-                      {runResult.trace.map(item => (
-                        <div key={`${item.nodeId}-${item.message}`} className="rounded-md border border-module-border bg-workflow-block-bg p-2 system-xs-regular">
-                          <div className="mb-0.5 flex items-center gap-2">
-                            <span className="system-xs-medium text-text-primary">{item.nodeName}</span>
-                            <Badge variant={item.success ? 'success' : 'warning'}>{item.kind}</Badge>
-                          </div>
-                          <div className="text-text-tertiary">{item.message}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-
-          <DrawerFooter className="flex-row justify-end">
-            {/* 关闭在左、主操作在右：与规则模式那个试运行抽屉摆同一个位置，换个模式不用重新找按钮。 */}
-            <WorkflowButton size="medium" onClick={() => setTestDrawerOpen(false)}>{t('common.action.close')}</WorkflowButton>
-            <WorkflowButton size="medium" variant="primary" onClick={runLocalTest}>{t('router.runPanel.run')}</WorkflowButton>
-          </DrawerFooter>
-        </DrawerContent>
-      </Drawer>
+      <WorkflowRunDrawer
+        open={testDrawerOpen}
+        onOpenChange={setTestDrawerOpen}
+        payloadText={payloadText}
+        onPayloadTextChange={setPayloadText}
+        payloadError={payloadError}
+        payloadRows={payloadRows}
+        result={runResult}
+        groups={nodeOutputGroups}
+        onRun={runLocalTest}
+      />
 
       {/* 弹窗挂在画布之外：它只负责收集名字与说明，图数据仍然由页面这一层持有。 */}
       <SaveVersionDialog
