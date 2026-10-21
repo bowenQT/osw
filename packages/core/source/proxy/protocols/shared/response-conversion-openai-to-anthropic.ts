@@ -75,6 +75,12 @@ export function openAiResponseToAnthropic(body: Json): Json {
   }
 }
 
+/** 名字还没到齐、因此还不能发出 `content_block_start` 的工具调用。 */
+interface PendingToolUse {
+  id: string
+  name: string
+}
+
 export interface OpenAiToAnthropicState {
   started: boolean
   stopped: boolean
@@ -90,6 +96,11 @@ export interface OpenAiToAnthropicState {
   toolBlockIndexes: Map<number, number>
   /** 已打开但未关闭的 block index，按打开顺序排列。 */
   openBlockIndexes: number[]
+  /**
+   * 名字还在增长的工具调用。`content_block_start` 发出去就不能改 name，
+   * 所以要等名字收齐再开块。
+   */
+  pendingToolUses: Map<number, PendingToolUse>
 }
 
 export function createOpenAiToAnthropicState(): OpenAiToAnthropicState {
@@ -102,6 +113,7 @@ export function createOpenAiToAnthropicState(): OpenAiToAnthropicState {
     textBlockIndex: null,
     toolBlockIndexes: new Map(),
     openBlockIndexes: [],
+    pendingToolUses: new Map(),
   }
 }
 
@@ -122,10 +134,35 @@ function ensureStarted(state: OpenAiToAnthropicState, events: Json[]): void {
   })
 }
 
+/**
+ * 名字收齐后才发 `content_block_start`。已经开过的块返回原 index，不再发一次。
+ * 块一旦发出，name 就锁死了。
+ */
+function openPendingToolUse(state: OpenAiToAnthropicState, events: Json[], openAiIndex: number): number | undefined {
+  const pending = state.pendingToolUses.get(openAiIndex)
+  if (!pending) return state.toolBlockIndexes.get(openAiIndex)
+  state.pendingToolUses.delete(openAiIndex)
+  ensureStarted(state, events)
+  const blockIndex = state.nextIndex++
+  state.toolBlockIndexes.set(openAiIndex, blockIndex)
+  state.openBlockIndexes.push(blockIndex)
+  events.push({
+    type: 'content_block_start',
+    index: blockIndex,
+    content_block: { type: 'tool_use', id: pending.id, name: pending.name, input: {} },
+  })
+  return blockIndex
+}
+
+function openPendingToolUses(state: OpenAiToAnthropicState, events: Json[]): void {
+  for (const openAiIndex of [...state.pendingToolUses.keys()]) openPendingToolUse(state, events, openAiIndex)
+}
+
 function emitStop(state: OpenAiToAnthropicState, events: Json[]): void {
   if (state.stopped) return
   ensureStarted(state, events)
   state.stopped = true
+  openPendingToolUses(state, events)
   for (const index of state.openBlockIndexes) events.push({ type: 'content_block_stop', index })
   state.openBlockIndexes = []
   events.push({
@@ -144,6 +181,25 @@ export function openAiChunkToAnthropicEvents(chunk: Json, state: OpenAiToAnthrop
   state.model = asString(chunk.model) ?? state.model
 
   const text = openAiContentToText(delta?.content)
+  if (text && state.pendingToolUses.size > 0) {
+    // 文本出现说明已经挂起的工具名不会再增长，与「下一个工具出现」同一条收齐规则。
+    // 先按出现顺序开块，否则这段文本会占掉更小的 index，工具调用被排到文本后面。
+    // 同一帧里如果还带着这些工具的名字片段，先拼上再开，避免把前缀锁死。
+    // 本帧才出现的新工具不在这里开，仍走下面的循环，这样文本和工具在同一帧时文本仍在前面。
+    for (const rawCall of asArray(delta?.tool_calls)) {
+      const call = asObject(rawCall)
+      if (!call || call.type === 'custom') continue
+      const openAiIndex = asNumber(call.index) ?? 0
+      const pending = state.pendingToolUses.get(openAiIndex)
+      if (!pending) continue
+      const fn = asObject(call.function)
+      const id = asString(call.id)
+      const nameFragment = asString(fn?.name)
+      if (id && !pending.id) pending.id = id
+      if (nameFragment) pending.name += nameFragment
+    }
+    openPendingToolUses(state, events)
+  }
   if (text) {
     ensureStarted(state, events)
     if (state.textBlockIndex === null) {
@@ -162,21 +218,26 @@ export function openAiChunkToAnthropicEvents(chunk: Json, state: OpenAiToAnthrop
     if (call.type === 'custom') continue
     const openAiIndex = asNumber(call.index) ?? 0
     const fn = asObject(call.function)
+    const nameFragment = asString(fn?.name)
+    // 空字符串也算参数开始：官方流式会在带完整名字的首个 delta 里放 `arguments: ""`。
+    // 名字一旦跟着参数出现，就可以开块，且不能为此多发出一条空的 input_json_delta。
+    const argumentsText = asString(fn?.arguments)
     let blockIndex = state.toolBlockIndexes.get(openAiIndex)
     if (blockIndex === undefined) {
-      ensureStarted(state, events)
-      blockIndex = state.nextIndex++
-      state.toolBlockIndexes.set(openAiIndex, blockIndex)
-      state.openBlockIndexes.push(blockIndex)
-      events.push({
-        type: 'content_block_start',
-        index: blockIndex,
-        content_block: { type: 'tool_use', id: asString(call.id) ?? '', name: asString(fn?.name) ?? '', input: {} },
-      })
+      let pending = state.pendingToolUses.get(openAiIndex)
+      if (!pending) {
+        // 下一个工具出现，说明前面那个名字已经不会再增长。
+        openPendingToolUses(state, events)
+        pending = { id: '', name: '' }
+        state.pendingToolUses.set(openAiIndex, pending)
+      }
+      const id = asString(call.id)
+      if (id && !pending.id) pending.id = id
+      if (nameFragment) pending.name += nameFragment
+      if (argumentsText !== undefined) blockIndex = openPendingToolUse(state, events, openAiIndex)
     }
-    const argumentsDelta = asString(fn?.arguments)
-    if (argumentsDelta) {
-      events.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: argumentsDelta } })
+    if (blockIndex !== undefined && argumentsText) {
+      events.push({ type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: argumentsText } })
     }
   }
 
@@ -192,7 +253,8 @@ export function openAiChunkToAnthropicEvents(chunk: Json, state: OpenAiToAnthrop
 }
 
 export function finishOpenAiToAnthropic(state: OpenAiToAnthropicState): Json[] {
-  if (!state.started || state.stopped) return []
+  if (state.stopped) return []
+  if (!state.started && state.pendingToolUses.size === 0) return []
   const events: Json[] = []
   emitStop(state, events)
   return events
