@@ -336,26 +336,32 @@ export function openAiChunkToResponsesEvents(chunk: Json, state: OpenAiToRespons
     closeTextItem(state, events, 'completed')
 
     const openAiIndex = asNumber(call.index) ?? 0
+    const custom = asObject(call.custom)
+    const fn = asObject(call.function)
     let item = state.toolItems.get(openAiIndex)
     if (!item) {
       const outputIndex = state.nextOutputIndex++
       // 流式下 `custom` 调用的名字与载荷都在 `custom` 子对象里，字段与 function 调用平行。
-      const custom = asObject(call.custom)
       item = {
         outputIndex,
         itemId: `${state.id}_fc_${outputIndex}`,
         kind: custom ? 'custom' : 'function',
         callId: asString(call.id) ?? '',
-        name: asString(custom?.name) ?? asString(asObject(call.function)?.name) ?? '',
+        name: asString(custom?.name) ?? asString(fn?.name) ?? '',
         payload: '',
         added: false,
         closed: false,
       }
       state.toolItems.set(openAiIndex, item)
+    } else {
+      // OpenAI 允许把 function.name / custom.name 拆进后续 delta，按片段拼接。
+      // output_item.added 用当时已知的前缀；done 与最终 output 用拼完的全名再还原命名空间。
+      const nameFragment = item.kind === 'custom' ? asString(custom?.name) : asString(fn?.name)
+      if (nameFragment) item.name += nameFragment
     }
     if (!item.added) {
       item.added = true
-      // 流式下名字可能被拆成多个 delta；能查到映射就还原，查不到就先给原始名字，
+      // 能查到映射就还原，查不到就先给原始名字。名字还没到齐时这里只能是前缀，
       // 收尾的 output_item.done 里一定会是还原后的完整寻址。
       events.push({
         type: 'response.output_item.added',
@@ -363,8 +369,7 @@ export function openAiChunkToResponsesEvents(chunk: Json, state: OpenAiToRespons
         item: toolCallItem(item.kind, item.itemId, item.callId, item.name, item.payload, 'in_progress', state.toolNames),
       })
     }
-    const custom = asObject(call.custom)
-    const payloadDelta = custom ? asString(custom.input) : asString(asObject(call.function)?.arguments)
+    const payloadDelta = custom ? asString(custom.input) : asString(fn?.arguments)
     if (payloadDelta) {
       item.payload += payloadDelta
       events.push(custom

@@ -404,6 +404,76 @@ describe('openAiChunkToResponsesEvents', () => {
     })
   })
 
+  it('concatenates a function name split across deltas and restores the namespace on the full name', () => {
+    const plain = createOpenAiToResponsesState()
+    const plainEvents = [
+      ...openAiChunkToResponsesEvents({
+        id: 'chat_8',
+        choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'get_' } }] } }],
+      }, plain),
+      ...openAiChunkToResponsesEvents({
+        choices: [{
+          delta: { tool_calls: [{ index: 0, function: { name: 'weather', arguments: '{}' } }] },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }, plain),
+    ]
+    expect(plainEvents.find(event => event.type === 'response.output_item.done')).toMatchObject({
+      item: { name: 'get_weather', arguments: '{}' },
+    })
+    expect(plainEvents.at(-1)).toMatchObject({
+      response: { output: [{ name: 'get_weather', arguments: '{}' }] },
+    })
+
+    const toolNames = new ToolNameRegistry()
+    toolNames.flatten('crm', 'lookup')
+    const namespaced = createOpenAiToResponsesState(toolNames)
+    const namespacedEvents = [
+      ...openAiChunkToResponsesEvents({
+        id: 'chat_8',
+        choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'crm__' } }] } }],
+      }, namespaced),
+      ...openAiChunkToResponsesEvents({
+        choices: [{
+          delta: { tool_calls: [{ index: 0, function: { name: 'lookup', arguments: '{}' } }] },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }, namespaced),
+    ]
+    expect(namespacedEvents.find(event => event.type === 'response.output_item.done')).toMatchObject({
+      item: { name: 'lookup', namespace: 'crm', arguments: '{}' },
+    })
+    expect(namespacedEvents.at(-1)).toMatchObject({
+      response: { output: [{ name: 'lookup', namespace: 'crm', arguments: '{}' }] },
+    })
+  })
+
+  it('concatenates a custom tool name split across deltas', () => {
+    const streamState = createOpenAiToResponsesState()
+    const events = [
+      ...openAiChunkToResponsesEvents({
+        id: 'chat_9',
+        choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'custom', custom: { name: 'get_' } }] } }],
+      }, streamState),
+      ...openAiChunkToResponsesEvents({
+        choices: [{
+          delta: { tool_calls: [{ index: 0, custom: { name: 'weather', input: 'free' } }] },
+          finish_reason: 'tool_calls',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }, streamState),
+    ]
+
+    expect(events.find(event => event.type === 'response.output_item.done')).toMatchObject({
+      item: { type: 'custom_tool_call', name: 'get_weather', input: 'free' },
+    })
+    expect(events.at(-1)).toMatchObject({
+      response: { output: [{ type: 'custom_tool_call', name: 'get_weather', input: 'free' }] },
+    })
+  })
+
   it('streams custom_tool_call items with their own input events', () => {
     const toolNames = new ToolNameRegistry()
     toolNames.flatten('crm', 'raw')
