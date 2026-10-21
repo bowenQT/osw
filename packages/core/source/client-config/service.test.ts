@@ -811,6 +811,35 @@ describe('applyClientConfigDefaults', () => {
     expect(content).toContain(`[model_providers.${LOCAL_PROVIDER_ID}]`)
   })
 
+  it('keeps a claude model that is named only on ANTHROPIC_MODEL', async () => {
+    // 顶层 `model` 经常不写，模型名在 `env.ANTHROPIC_MODEL`。一键生效必须沿用这个名字，
+    // 而不是因为角色的第一个字段是空的，就把 model / ANTHROPIC_MODEL / opus 整组写成兜底值 `default`。
+    writeFile(
+      CLAUDE_FILE,
+      `${JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+          ANTHROPIC_MODEL: 'claude-sonnet-4-5',
+          ANTHROPIC_SMALL_FAST_MODEL: 'claude-haiku-4-5',
+        },
+      })}\n`,
+    )
+
+    await applyClientConfigDefaults(CLAUDE)
+
+    const written = JSON.parse(readFile(CLAUDE_FILE)) as { model?: string; env: Record<string, string> }
+    expect(written.model).toBe('claude-sonnet-4-5')
+    expect(written.env.ANTHROPIC_MODEL).toBe('claude-sonnet-4-5')
+    expect(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('claude-sonnet-4-5')
+    expect(written.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME).toBe('claude-sonnet-4-5')
+    expect(written.env.ANTHROPIC_SMALL_FAST_MODEL).toBe('claude-haiku-4-5')
+    expect((await readClientConfigFile(CLAUDE, CLAUDE_FILE)).detected).toMatchObject({
+      model: 'claude-sonnet-4-5',
+      mainModel: 'claude-sonnet-4-5',
+      smallFast: 'claude-haiku-4-5',
+    })
+  })
+
   it('fills the harness runtime settings with a route and a default model', async () => {
     const [harness] = await applyClientConfigDefaults(DSH_FILE)
 
