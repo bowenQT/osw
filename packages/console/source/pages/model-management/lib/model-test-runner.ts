@@ -68,10 +68,23 @@ export class ModelTestRunner {
   private controller: AbortController | null = null
   private snapshot: ModelTestSnapshot = EMPTY
   private readonly listeners = new Set<() => void>()
-  private disposed = false
+  /**
+   * 还有没有人在听。**默认是活的**，只有 {@link detach} 会关掉它。
+   *
+   * 这个标记不能叫 `disposed` 并且一经置位就永不复原：那种写法在 `React.StrictMode`
+   * 下会让执行器在挂载那一刻就死掉，之后点「开始诊断」永远没反应（详见 `detach`）。
+   */
+  private attached = true
 
   /** 订阅状态变更；返回退订函数。React 侧直接把它交给 `useSyncExternalStore`。 */
   readonly subscribe = (listener: () => void): (() => void) => {
+    /*
+     * 有人来订阅 = 这个执行器又活了。
+     *
+     * StrictMode 的「假卸载」之后 React 会重新订阅，靠这一步把上一次 `detach`
+     * 关掉的门重新打开——所以 `detach` 必须是可逆的。
+     */
+    this.attached = true
     this.listeners.add(listener)
     return () => {
       this.listeners.delete(listener)
@@ -89,7 +102,7 @@ export class ModelTestRunner {
    * 靠状态位去挡是挡不住的。
    */
   readonly run = async (batch: readonly TestTask[], options: TestRunOptions): Promise<void> => {
-    if (this.disposed || this.running || batch.length === 0) return
+    if (!this.attached || this.running || batch.length === 0) return
 
     const controller = new AbortController()
     this.running = true
@@ -166,13 +179,20 @@ export class ModelTestRunner {
   }
 
   /**
-   * 丢弃这个执行器。
+   * 与 React 侧断开：掐掉在飞的请求（用户已经离开，不该继续计费），并退掉所有订阅
+   * （剩下的收尾不会再通知任何人）。
    *
-   * 面板被卸载（切换页面）时调用：掐掉在飞的请求，避免用户已经离开还在持续计费；
-   * 同时退掉所有订阅，之后队列里剩下的收尾不会再通知任何人。
+   * **这是可逆的**，而且必须可逆。`React.StrictMode` 会故意把每个 effect
+   * 「挂载 → 清理 → 再挂载」跑一遍，用来暴露副作用不幂等的问题。清理里做**不可逆**
+   * 的状态变更，等于组件第一次挂载就把自己弄死；而 `new ModelTestRunner()` 在
+   * `useMemo` 里只建一次，那一个实例于是永久失效——这正是这个类曾经的事故：
+   * 清理时置 `disposed = true` 且永不复原，表现就是**点「开始诊断」毫无反应**。
+   * 单测没发现，是因为测试里的 `render()` 没有套 StrictMode（真实应用里开着）。
+   *
+   * 所以这里只关「门」，不砸「锁」：{@link subscribe} 会把门重新打开。
    */
-  dispose(): void {
-    this.disposed = true
+  detach(): void {
+    this.attached = false
     this.controller?.abort()
     this.listeners.clear()
   }

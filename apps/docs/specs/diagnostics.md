@@ -37,27 +37,32 @@
 
 | 协议 | 正文 |
 |---|---|
-| `openai-completions` | `{ model, stream?, messages: [{ role: 'user', content }] }` |
-| `openai-responses` | `{ model, stream?, input: [{ role: 'user', content }] }` |
-| `anthropic-messages` | `{ model, max_tokens?, stream?, messages: [{ role: 'user', content }] }` |
+| `openai-completions` | `{ model, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'user', content }] }` |
+| `openai-responses` | `{ model, stream: true, stream_options: { include_usage: true }, input: [{ role: 'user', content }] }` |
+| `anthropic-messages` | `{ model, max_tokens?, stream: true, messages: [{ role: 'user', content }] }` |
 
-三条规则值得单独解释：
+四条规则值得单独解释：
 
 **流式写在正文里，不写在头上。** 三种协议都靠 `stream: true` 表达这件事，上游也只认这个字段（Anthropic 同样是给了 `stream` 才回 SSE）。
 
-**`max_tokens` 只在直连 Anthropic 时出现。** `/v1/messages` 把 `max_tokens` 当必填，不给就是 400；而转换层在不给时会补一个 4096 的上限——一条「Hi」理论上有成本风险。所以连通性压到 16（只要一个字节），速度诊断放大到 512（数完 1 到 200；16 个 Token 会把数数掐断，那时量到的不是出字速度而是上限速度）。
+**诊断只发流式请求，没有「非流式」这一种。** 整包响应里既没有「首字节」这个时刻（§3.3），也拿不到上游的用量（用量挂在 SSE 的收尾帧上，§3.4）。一次非流式诊断跑完，表里半列都是 `—`，那不是「这次没测到」，而是「这种请求方式压根测不出来」。所以它不是一个可选模式，是一个缺省。
+
+**两个 OpenAI 协议必须自己写 `stream_options.include_usage`。** 代理层的 `openai-completions` 原生适配器会补这个字段，但 `OpenAiResponsesNativeAdapter` 有意原样透传正文，`applyOpenAiResponsesRequestDefaults` 在真实链路上没有调用点。诊断不能指望某个下游顺带补上：不写，收尾帧里就没有 `usage`，输出 Token 恒为 `—`。Anthropic 没有这个概念，不写。
+
+**`max_tokens` 只在直连 Anthropic 时出现。** `/v1/messages` 把 `max_tokens` 当必填，不给就是 400；而转换层在不给时会补一个 4096 的上限——一条「Hi」理论上有成本风险。所以流式诊断压到 16（只要一个字节就能量到首字），速度诊断放大到 512（数完 1 到 200；16 个 Token 会把数数掐断，那时量到的不是出字速度而是上限速度）。
 
 **`converted` 为真时不加输出上限。** 被协议转换改写过的目标多是 OpenAI 形态，而 OpenAI 的 o 系模型只认 `max_completion_tokens`，塞 `max_tokens` 反而换来一个 400。
 
-### 3.2 三种模式
+### 3.2 两种模式
 
 | 模式 | 形态 | 提示词默认值 | 量什么 |
 |---|---|---|---|
-| `connectivity` | 整包 | `Hi` | 通不通、状态码、耗时 |
-| `streaming` | SSE | `Hi` | 首字延迟、耗时 |
-| `speed` | SSE | 数 1 到 200 | 输出速度、首字延迟、用量 |
+| `streaming` | SSE | `Hi` | 首字延迟、耗时、用量 |
+| `speed` | SSE | 数 1 到 200 | 输出速度、首字延迟、耗时、用量 |
 
-连通性走整包而不是流式：一次握手要的是最快拿到结论，而整包响应里根本没有「第一个字节」这个时刻。所以「测速度」不是「连通性 + 多测几个数」，而是另一种请求写法。
+两种模式**只有提示词不同**，请求写法完全一样：都给 `stream: true`，都要用量。「测速度」不是「连通性 + 多测几个数」，而是同一台机器上换一段更长的正文——多轮汇总、指标口径、失败判定全部共用一套代码，两条路径之间不存在「只有一边会犯的错」。
+
+唯一的例外是草稿连接测试（§2）：它用 `DiagnosticBodyOptions.stream: false` 显式要整包正文。那个探针是一问一答的握手，用 `requestHttpBuffered` 发一次、只看状态码，压根不读流；让它收 SSE 只会把「握手多久」量成「整条流多久」。这个开关是给那一个调用点的，不是给用户选的模式。
 
 ### 3.3 首字延迟（TTFT）
 
@@ -69,9 +74,11 @@
 
 ### 3.4 用量
 
-三种协议的字段名不同，但都只给「输入 / 输出」两个数。读法见 `probe-response.ts` 的 `readUsage`，与 `proxy/observers/usage.ts` 同一口径：有些网关在同一个 `usage` 里既给 Chat 风格字段（占位 0）又给 Responses 风格字段（真实值），按顺序取「第一个数字」会先撞上占位 0，所以优先取正数，一个都没有时才回落到 0。
+三种协议的字段名不同，但都只给「输入 / 输出」两个数。因为诊断恒为流式，用量**只有一个来源**：`StreamProbeResponse` 里的那个累加器，与 `proxy/observers/usage.ts` 同一口径。有些网关在同一个 `usage` 里既给 Chat 风格字段（占位 0）又给 Responses 风格字段（真实值），按顺序取「第一个数字」会先撞上占位 0，所以优先取正数，一个都没有时才回落到 0。
 
-流式的用量散在若干帧上（多数渠道只挂在收尾帧），能读懂它的只有那个累加器——`StreamProbeResponse` 因此同时是字节读者和用量读者，不为「流式」另写一份拆帧逻辑。
+这条口径现在只在 `probe-response.ts` 存在一份：原先整包形态要另走 `readUsage` 从响应正文里抠数字，两条读法各有各的边界，同一次诊断换个模式就可能给出两个数。恒走流式之后那个分支没有调用点，已经移除。
+
+不该拿到用量的时候它会是空：请求里没写 `stream_options.include_usage`（§3.1）、或者上游压根不认这个字段。**丢字段是上游的自由，我们只负责把话说清楚**——请求里写了，收尾帧里还是没有，那就是这个渠道不报用量。
 
 读不到就是 `null`。诊断面板宁可显示 `—`，也不编一个 0 出来。
 
@@ -122,6 +129,8 @@
 ### 5.2 默认值是契约的一部分
 
 `ModelTestRunRequestSchema` 里的 `default()` 不是服务端的宽容。老界面、老脚本发来的请求少了某个字段时，语义必须仍然是「按最朴素的方式测一次」；否则升级服务端会让旧调用方悄悄换一套测法，而他们看不到任何变化。
+
+`mode` 的默认值是 `streaming`，不是「什么都不测」：诊断只有两种测法，而少给一个字段的调用方要的显然是「测一下通不通」——那就给结论最全的那一种。这也是模式被砍到两个之后默认值唯一站得住的选择：旧的 `connectivity` 已经不是合法值了，任何还想按老写法跑的调用方都会在解析阶段就被挡住，而不是被悄悄降级成另一种测法。
 
 ## 6. 多轮汇总口径
 
@@ -221,7 +230,7 @@ N 不合法（非正数、非有限值、不是数）时按 1 处理。空任务
 
 | 文件 | 钉住什么 |
 |---|---|
-| `probe-request.test.ts` | 三种协议 × 三种模式的正文形状、`max_tokens` 规则、补齐的边界（只补不截、分隔符算长度） |
+| `probe-request.test.ts` | 三种协议 × 两种模式的正文形状、`include_usage` 的写与不写、`stream: false` 的显式整包、`max_tokens` 规则、补齐的边界（只补不截、分隔符算长度） |
 | `probe-response.test.ts` | 用量读法的正数优先、流式首字的打点位置 |
 | `round-summary.test.ts` | §6 的每一条口径，包括 `null` 与 `0` 的区别 |
 | `target-plan.test.ts` | 原生优先、端点地址借用、两层都没配时为 `null` |
@@ -234,6 +243,8 @@ N 不合法（非正数、非有限值、不是数）时按 1 处理。空任务
 ## 10. 验收
 
 - 渠道诊断与草稿连接测试的行为差异与 §2 表格逐条一致（尤其是草稿那次不写库、不进冷却）。
+- 渠道诊断发出去的每一次请求都是流式：正文里有 `stream: true`，两个 OpenAI 协议还带 `stream_options.include_usage`；请求头 `accept` 是 `text/event-stream`。契约里不存在能被解析成「非流式诊断」的值。
+- 任何一条诊断结论里，首字、耗时、用量、速度都来自同一次流式尝试，不存在「整包正文 + 流式打点」这种混搭。
 - `rounds`、`inputLength`、并发在任何一层都没有上界；只有下界。
 - 所有「读不到」的量都是 `null`，界面上显示 `—`，没有任何一处把未知写成 `0`。
 - 多轮里有一轮失败时，顶层是失败、状态码是第一个失败轮的码。

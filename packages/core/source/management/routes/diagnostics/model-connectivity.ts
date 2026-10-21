@@ -143,7 +143,9 @@ async function probeEndpoint(input: ProbeInput): Promise<ModelConnectivityResult
         // 探针不跟随重定向：跟着跳一次就变成了在测另一个地址，用户填的那条到底通不通就没结论了。
         signal: input.signal,
       },
-      Buffer.from(buildDiagnosticBody(protocol, input.modelName, false)),
+      // 这里的探针是一问一答的握手，不读流：显式要整包正文，否则上游回 SSE 时
+      // `requestHttpBuffered` 会一直读到流自己结束，量到的就不是握手耗时了。
+      Buffer.from(buildDiagnosticBody(protocol, input.modelName, false, 'streaming', { stream: false })),
     )
 
     const success = response.statusCode >= 200 && response.statusCode < 400

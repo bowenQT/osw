@@ -34,8 +34,8 @@ export const MIN_MODEL_TEST_ROUNDS = 1
  */
 export const ModelTestRunRequestSchema = z.object({
   protocol: ProtocolSchema,
-  /** 不给模式就是连通性：老界面、老脚本发的请求仍然按原来的语义跑。 */
-  mode: ModelTestModeSchema.default('connectivity'),
+  /** 不给模式就是流式：老界面、老脚本发的请求仍然按最朴素的方式跑一次。 */
+  mode: ModelTestModeSchema.default('streaming'),
   providerIds: z.array(z.string()).optional(),
   modelIds: z.array(z.string()).optional(),
   /** 每个目标重复测几轮；默认 1，与旧行为逐字相同。 */

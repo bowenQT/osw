@@ -25,17 +25,16 @@ const SPEED_PROMPT = 'Count from 1 to 200, separated by single spaces. Output on
  * 速度诊断给直连 Anthropic 的输出上限。
  *
  * `/v1/messages` 把 `max_tokens` 当必填，不给就是 400；而转换层在不给时会补一个 4096
- * 的上限，一条「Hi」理论上有成本风险。所以连通性压到最小值，速度诊断放大到够数完
+ * 的上限，一句「Hi」理论上有成本风险。所以普通诊断压到最小值，速度诊断放大到够数完
  * 1 到 200——16 个 Token 会把数数掐断，那时量到的就不是出字速度，而是上限速度。
  */
 const SPEED_MAX_TOKENS = 512
 
-/** 连通性诊断给直连 Anthropic 的输出上限。只要一个字节，越小越省。 */
-const CONNECTIVITY_MAX_TOKENS = 16
+/** 普通诊断给直连 Anthropic 的输出上限。只要一个字节，越小越省。 */
+const DEFAULT_MAX_TOKENS = 16
 
 /** 各模式在用户没写提示词时用的默认值。 */
 const DEFAULT_PROMPTS: Record<ModelTestMode, string> = {
-  connectivity: 'Hi',
   streaming: 'Hi',
   speed: SPEED_PROMPT,
 }
@@ -54,6 +53,14 @@ export interface DiagnosticBodyOptions {
   prompt?: string
   /** 提示词补齐到的字符数；0 表示不补。 */
   inputLength?: number
+  /**
+   * 要不要在正文里要流式。默认 `true`——渠道诊断恒为流式。
+   *
+   * 只有一种情况需要改它：供应商模型对话框里的「连接测试」（`routes/diagnostics/model-connectivity.ts`）。
+   * 那个探针用 `requestHttpBuffered` 发一次一问一答的请求、只看状态码，压根不读流；
+   * 让它拿到 SSE 只会把一次握手变成一次「读到流自己结束才算完」的等待，量到的耗时也不再是握手耗时。
+   */
+  stream?: boolean
 }
 
 /**
@@ -80,31 +87,38 @@ export function padPrompt(prompt: string, inputLength: number): string {
  * 而 OpenAI 的 o 系模型只认 `max_completion_tokens`，塞 `max_tokens` 反而会换来一个 400，
  * 所以走转换时一律不加输出上限。
  *
- * 流式与否写在**请求体**里而不是头上：三种协议都靠 `stream: true` 表达这件事，
- * 上游也只认这个字段（Anthropic 同样是给 `stream` 才回 SSE）。速度诊断也走流式，
- * 否则量不到首字节与出字。
+ * **永远是流式。** 诊断只有两件事要回答：首字节隔了多久才到、上游到底产出了多少 Token。
+ * 两件都只存在于 SSE 里——整包响应没有「第一块」这个时刻，而用量挂在流的收尾帧上（见下）。
+ * 所以这里不给「非流式」留分支：一个能通但什么都量不到的模式不值得占一个下拉项。
+ *
+ * 流式写在**请求体**里而不是头上：三种协议都靠 `stream: true` 表达这件事，
+ * 上游也只认这个字段（Anthropic 同样是给 `stream` 才回 SSE）。
  */
-export function buildDiagnosticBody(protocol: Protocol, modelId: string, converted: boolean, mode: ModelTestMode = 'connectivity', options: DiagnosticBodyOptions = {}): string {
+export function buildDiagnosticBody(protocol: Protocol, modelId: string, converted: boolean, mode: ModelTestMode = 'streaming', options: DiagnosticBodyOptions = {}): string {
   const basePrompt = options.prompt?.trim() || DEFAULT_PROMPTS[mode]
   const prompt = padPrompt(basePrompt, options.inputLength ?? 0)
-  const stream = mode !== 'connectivity'
+  const stream = options.stream ?? true
   switch (protocol) {
     case 'openai-completions':
       return JSON.stringify({
         model: modelId,
-        ...(stream ? { stream: true } : {}),
+        ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
         messages: [{ role: 'user', content: prompt }],
       })
     case 'openai-responses':
       return JSON.stringify({
         model: modelId,
-        ...(stream ? { stream: true } : {}),
+        // Responses 的 `stream_options` 官方只有 `include_obfuscation`，但 OpenAI 兼容网关
+        // （以及本仓的转换层）一律按 Chat 风格认 `include_usage`。真实请求经过协议适配器时
+        // 不会自动补这个字段（`OpenAiResponsesNativeAdapter` 刻意原样保留），所以只能在这里写。
+        // 不认这个字段的上游会忽略它，不会因此报错。
+        ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
         input: [{ role: 'user', content: prompt }],
       })
     case 'anthropic-messages':
       return JSON.stringify({
         model: modelId,
-        ...(converted ? {} : { max_tokens: mode === 'speed' ? SPEED_MAX_TOKENS : CONNECTIVITY_MAX_TOKENS }),
+        ...(converted ? {} : { max_tokens: mode === 'speed' ? SPEED_MAX_TOKENS : DEFAULT_MAX_TOKENS }),
         ...(stream ? { stream: true } : {}),
         messages: [{ role: 'user', content: prompt }],
       })

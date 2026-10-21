@@ -4,10 +4,9 @@ import type { ModelTestRoundResult } from '@common/diagnostics'
 import type { ModelTestMode, Protocol } from '@common/schemas'
 import { executeProxyRequest } from '../../proxy/execution/attempt-executor'
 import { createRequestContext } from '../../proxy/request/request-context'
-import { BufferedProxyResponse } from '../../proxy/response/proxy-response'
 import type { buildUpstreamTarget } from '../../proxy/planners/target-planner'
 import { buildDiagnosticBody, type DiagnosticBodyOptions } from './probe-request'
-import { StreamProbeResponse, readUsage } from './probe-response'
+import { StreamProbeResponse } from './probe-response'
 
 /**
  * 跑**一轮**渠道诊断。
@@ -32,8 +31,6 @@ export interface DiagnosticRoundInput {
   /** 这次请求会不会被协议转换层改写（决定要不要带输出上限）。 */
   converted: boolean
   mode: ModelTestMode
-  /** 是否走流式。与 `mode` 不是同一件事，但当前由它推导。 */
-  streaming: boolean
   bodyOptions: DiagnosticBodyOptions
   signal: AbortSignal
   /** 第几轮，从 1 开始。 */
@@ -44,43 +41,44 @@ export async function runDiagnosticRound(input: DiagnosticRoundInput): Promise<M
   const startedAt = Date.now()
   try {
     const testBody = buildDiagnosticBody(input.protocol, input.modelName, input.converted, input.mode, input.bodyOptions)
-    const probe = input.streaming ? new StreamProbeResponse() : null
-    const response: BufferedProxyResponse = probe ?? new BufferedProxyResponse()
+    // 诊断只有一种形态：流式。首字与用量都只存在于 SSE 里，而整包交付下这个读字节的
+    // 出口根本收不到逐帧数据（出口会把整包攒完之后一次性写出去），两样读到的都是空。
+    const probe = new StreamProbeResponse()
     await executeProxyRequest({
       context: createRequestContext({
         requestId: generateId('req_'),
         logicalModelId: 'diagnostic',
         clientProtocol: input.protocol,
         // 客户端跳的形态由我们声明：上游会照着这个形态回，而我们正是要看它照不照做。
-        transport: input.streaming ? 'http-stream' : 'http',
+        transport: 'http-stream',
         method: 'POST',
         path: `/diagnostic/${input.protocol}`,
         headers: {
-          accept: input.streaming ? 'text/event-stream' : 'application/json',
+          accept: 'text/event-stream',
           'content-type': 'application/json',
         },
         requestBody: Buffer.from(testBody),
         signal: input.signal,
       }),
       targets: [input.target],
-      response,
+      response: probe,
       // 连接测试是内部执行：它的用量由 `provider_tested` 回答，不是客户端任务（见 `ExecutionOrigin`）。
       origin: 'internal',
     })
-    const success = response.statusCode >= 200 && response.statusCode < 400
+    const success = probe.statusCode >= 200 && probe.statusCode < 400
     // 流式的正文是 SSE，`readUsage` 那个「解一个 JSON」的读法在它面前永远是空的：
     // 用量由同一个累加器从流里读走（它也是唯一还在数首字的地方）。
-    const usage = probe ? probe.usage() : readUsage(response.body)
+    const usage = probe.usage()
     const durationMilliseconds = Date.now() - startedAt
     return {
       round: input.round,
       success,
-      statusCode: response.statusCode || undefined,
+      statusCode: probe.statusCode || undefined,
       durationMilliseconds,
-      errorMessage: success ? undefined : describeFailure(response),
+      errorMessage: success ? undefined : describeFailure(probe),
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
-      ttftMilliseconds: probe ? probe.firstOutputElapsed(startedAt) : null,
+      ttftMilliseconds: probe.firstOutputElapsed(startedAt),
       tokensPerSecond: success && input.mode === 'speed' ? tokensPerSecondFromTotals(usage.outputTokens ?? 0, durationMilliseconds) : null,
     }
   } catch (error) {
@@ -96,7 +94,7 @@ export async function runDiagnosticRound(input: DiagnosticRoundInput): Promise<M
 }
 
 /** 上游失败时最有用的一句话：执行器记下的失败原因优先，其次是上游正文，最后才是状态码。 */
-function describeFailure(response: BufferedProxyResponse): string {
+function describeFailure(response: StreamProbeResponse): string {
   if (response.failureMessage) return response.failureMessage
   try {
     const body = JSON.parse(response.body) as { errorMessage?: unknown; error?: { message?: unknown } }

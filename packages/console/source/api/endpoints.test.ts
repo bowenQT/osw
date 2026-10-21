@@ -306,11 +306,11 @@ describe('运行时与设置接口', () => {
   })
 
   it('模型测试把协议、模式与筛选条件一起下发', async () => {
-    await modelTestApi.run('openai-responses', 'connectivity', { providerIds: ['prov_1'], modelIds: ['pm_1'] })
+    await modelTestApi.run('openai-responses', 'streaming', { providerIds: ['prov_1'], modelIds: ['pm_1'] })
 
     expect(lastCall()).toEqual({
       path: '/model-test/run',
-      body: { protocol: 'openai-responses', mode: 'connectivity', providerIds: ['prov_1'], modelIds: ['pm_1'] },
+      body: { protocol: 'openai-responses', mode: 'streaming', providerIds: ['prov_1'], modelIds: ['pm_1'] },
     })
   })
 })

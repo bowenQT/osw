@@ -60,19 +60,22 @@ export type Protocol = z.infer<typeof ProtocolSchema>
 /**
  * 渠道诊断要回答哪个问题。
  *
- * 三种模式问的是同一件事的不同侧面，所以它们是**互斥的一次运行**，不是三个页面：
- * - `connectivity`：这条链路通不通（等价于一次最小请求打穿到上游并拿到 2xx）；
+ * 两种模式问的是同一件事的不同侧面，所以它们是**互斥的一次运行**，不是两个页面：
  * - `streaming`：上游**真的**按 SSE 逐帧回吗——形态不符（回整包）在诊断里就是失败，
  *   而不是被悄悄当成「通」；
- * - `speed`：首字节等多久、出字多快。它必须走流式：整包响应里没有「首字节」这个时刻，
- *   出字速度也无从谈起。
+ * - `speed`：首字节等多久、出字多快。
+ *
+ * **没有「非流式」这一种。** 诊断只发流式请求：整包响应里既没有「首字节」这个时刻，
+ * 也拿不到上游的用量（用量挂在 SSE 的收尾帧上，见 `diagnostics/probe-request.ts`），
+ * 一次非流式诊断跑完，表里半列都是 `—`。与其留一个「能通但什么都量不到」的模式，
+ * 不如只保留真正能回答问题的形态。
  *
  * 词表放在 `@common` 的理由与 {@link TransportKindSchema} 相同：管理端与界面必须共用同一套，
  * 各写一份迟早漂移。
  */
-export const ModelTestModeSchema = z.enum(['connectivity', 'streaming', 'speed'])
+export const ModelTestModeSchema = z.enum(['streaming', 'speed'])
 export type ModelTestMode = z.infer<typeof ModelTestModeSchema>
-/** 界面要按固定顺序列出这三种模式；列表与枚举同源，避免两处各写一份顺序。 */
+/** 界面要按固定顺序列出这些模式；列表与枚举同源，避免两处各写一份顺序。 */
 export const ALL_MODEL_TEST_MODES: ModelTestMode[] = [...ModelTestModeSchema.options]
 
 /**

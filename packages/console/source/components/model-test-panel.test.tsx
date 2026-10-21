@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { StrictMode } from 'react'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Provider, ProviderModelRoute } from '@common/schemas'
@@ -105,6 +106,19 @@ function renderPanel() {
 }
 
 /**
+ * 套一层 StrictMode 渲染。
+ *
+ * 真实应用就是套着的（`shell/providers.tsx` 里 `mountShell`），而 StrictMode 会把
+ * 每个 effect 「挂载 → 清理 → 再挂载」跑一遍。普通 `render()` 跳过了这一步，
+ * 于是「清理做了什么」这类缺陷在测试里完全看不见——这正是一整类
+ * 「点开始诊断毫无反应」的缺陷能长期藏在绿灯后面的原因。
+ */
+function renderPanelStrict() {
+  useLanguageStore.setState({ preference: 'zh-CN' })
+  return render(<StrictMode>{panelNode(true)}</StrictMode>)
+}
+
+/**
  * 勾上唯一的渠道：面板打开时默认谁都不选，先勾上才有模型行与待测计划行。
  */
 function selectProvider() {
@@ -150,7 +164,7 @@ function stubRunResults() {
       modelName: native ? NATIVE_MODEL : CONVERTING_MODEL,
       providerId: 'prov_1',
       providerName: PROVIDER_NAME,
-      mode: 'connectivity',
+      mode: 'streaming',
       success: native,
       statusCode: native ? 200 : 401,
       durationMilliseconds: native ? 1500 : 300,
@@ -176,6 +190,46 @@ beforeEach(() => {
 function startTest() {
   fireEvent.click(screen.getByRole('button', { name: zh('modelTest.action.start') }))
 }
+
+/*
+ * 「点开始诊断毫无反应」这道防线。
+ *
+ * 真实应用把整棵树套在 `React.StrictMode` 里，StrictMode 会把每个 effect
+ * 「挂载 → 清理 → 再挂载」跑一遍。清理里只要做了不可逆的事，组件就在挂载那一刻
+ * 把自己弄残了，而界面上**什么都不会变**：按钮没变灰、没有报错、也没有请求——
+ * 用户唯一能观察到的就是「点了没反应」。
+ *
+ * 这一组用例的全部价值在于**用 StrictMode 渲染**。普通 `render()` 里这些断言
+ * 一样绿，而应用是坏的。
+ */
+describe('StrictMode 下点「开始诊断」', () => {
+  it('按钮可用，并且真的把请求发出去', async () => {
+    stubRunResults()
+    renderPanelStrict()
+    selectProvider()
+
+    // 先确认门是开的：`disabled` 的按钮点了本来就不会有反应，那是另一个缺陷。
+    const start = screen.getByRole('button', { name: zh('modelTest.action.start') })
+    expect(start.getAttribute('disabled')).toBeNull()
+
+    fireEvent.click(start)
+    await waitFor(() => { expect(modelTestApi.run).toHaveBeenCalled() })
+  })
+
+  it('各模型默认全选可测协议：清理重跑不能把它们清空', () => {
+    renderPanelStrict()
+    selectProvider()
+
+    /*
+     * 曾经的事故：校正 effect 给每个模型 materialize 一个空集，而待测计划的默认值是
+     * 「没存过就全部可测协议」——空集不是「没存过」，它绕过了那个默认值。
+     * StrictMode 让这个 effect 立刻跑第二遍，面板一打开待测计划就归零。
+     *
+     * 勾上渠道后仍然要有计划：一个模型（三个可测协议）+ 一个模型（一个可测协议）。
+     */
+    expect(screen.getByRole('button', { name: zh('modelTest.action.start') }).getAttribute('disabled')).toBeNull()
+  })
+})
 
 describe('结果表的列划分', () => {
   it('表头七列，每列只写一个事实；协议单独成列', async () => {
@@ -309,7 +363,7 @@ describe('展开逐轮明细', () => {
           modelName: CONVERTING_MODEL,
           providerId: 'prov_1',
           providerName: PROVIDER_NAME,
-          mode: 'connectivity',
+          mode: 'streaming',
           // 两轮里挂了一轮：总账算失败，这正是「多轮才能看出稳定性」的用处。
           success: false,
           statusCode: 429,

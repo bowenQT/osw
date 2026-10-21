@@ -36,8 +36,8 @@ type MockUpstream = (response: BufferedResponseLike) => void | Promise<void>
 let mockUpstreamHandler: MockUpstream | null = null
 
 /**
- * 传输形态是「诊断请求怎么写」的一部分：连通性走整包、流式与速度走分块，
- * 这条断言只能从执行器入口看，替身把入口的参数留下来。
+ * 传输形态是「诊断请求怎么写」的一部分：诊断恒走分块形态，连「不给模式」也一样。
+ * 这条只能从执行器入口看，替身把入口的参数留下来。
  */
 const { reported, executeInputs } = vi.hoisted(() => ({
   reported: [] as TelemetryEventInput[],
@@ -154,7 +154,8 @@ function run(body: Record<string, unknown>, response: ServerResponse = mockRespo
 describe('model test run route', () => {
   it('跑通直连模型并回传用量', async () => {
     const { modelId } = await seedModel('direct', 'openai-completions', 'https://api.example.com/v1/chat/completions')
-    mockUpstreamHandler = jsonBody({ usage: { prompt_tokens: 12, completion_tokens: 34 } })
+    // 用量只能从流的收尾帧里读到：整包正文里没有它（这也是诊断恒为流式的原因之一）。
+    mockUpstreamHandler = sseBody(SSE_CONTENT, '{"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":34}}')
 
     const response = mockResponse()
     await run({ protocol: 'openai-completions' }, response)
@@ -292,7 +293,7 @@ describe('model test run route', () => {
     const model = await createProviderModelRoute({ providerId: provider.id, modelName: 'convertible-model', priority: 0 })
     const binding = await createProviderModelEndpoint({ providerModelId: model.id, providerEndpointId: endpoint.id })
     await createProtocolConverter({ providerModelEndpointId: binding.id, clientProtocol: 'openai-completions' })
-    mockUpstreamHandler = jsonBody({ usage: { input_tokens: 5, output_tokens: 7 } })
+    mockUpstreamHandler = sseBody(SSE_CONTENT, '{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7}}')
 
     const response = mockResponse()
     await run({ protocol: 'openai-completions' }, response)
@@ -354,21 +355,22 @@ describe('model test run route', () => {
 })
 
 describe('model test run route — 诊断模式', () => {
-  it('不给模式时按连通性跑：整包形态，也不报首字与速度', async () => {
+  it('不给模式就是流式：分块形态 + SSE 头，首字也量得到', async () => {
     await seedModel('default-mode', 'openai-completions', 'https://api.example.com/v1/chat/completions')
-    mockUpstreamHandler = jsonBody({ usage: { prompt_tokens: 1, completion_tokens: 2 } })
+    mockUpstreamHandler = sseBody(SSE_CONTENT, SSE_USAGE)
 
     const response = mockResponse()
     await run({ protocol: 'openai-completions' }, response)
 
-    expect(executeInputs[0].context.transport).toBe('http')
-    expect(executeInputs[0].context.headers.accept).toBe('application/json')
+    expect(executeInputs[0].context.transport).toBe('http-stream')
+    expect(executeInputs[0].context.headers.accept).toBe('text/event-stream')
     expect(results(response)[0]).toMatchObject({
-      mode: 'connectivity',
+      mode: 'streaming',
       success: true,
-      ttftMilliseconds: null,
-      tokensPerSecond: null,
     })
+    expect(typeof results(response)[0].ttftMilliseconds).toBe('number')
+    // 流式诊断不量速度：那是速度诊断的事，模式之间不能互相冒充。
+    expect(results(response)[0].tokensPerSecond).toBeNull()
   })
 
   it('流式诊断走分块形态，并要求上游按 SSE 回', async () => {

@@ -72,13 +72,26 @@ interface ModelTestPanelProps {
  * 最左边那 20px 是展开箭头：每行都能展开逐轮明细（轮次、成功率、错误原文）。
  * 箭头单独占一列而不是塞进状态格，是因为状态格要能一眼竖着扫下来，多一个交互形状就扫不动。
  *
- * 列对所有模式都在：连通性只能填 `—`，但列数不跟着数据变——同一张表在三种模式之间
- * 来回切时列宽就不该跳。
+ * 列对所有模式都在，且列数不跟着数据变：没有量到的格写 `—`，但表结构不动——
+ * 同一张表在两种模式之间来回切时列宽就不该跳。
  *
  * 窄屏（< md）落回单列堆叠，那时行里每格自带标签（{@link TaskCell} 的 `labelKey`），
  * 因为表头整条藏起来了。
  */
 const TASK_GRID_COLUMNS = 'md:grid-cols-[20px_minmax(150px,1.4fr)_minmax(120px,0.9fr)_66px_62px_64px_64px_64px]'
+
+/**
+ * 明细里逐轮的列宽模板：列名横条与每一轮共用一份。
+ *
+ * 原先每一轮是一串 `flex-wrap` 的「标签 值」：七组读数挤在左边、按可用宽度随意折行，
+ * 第 1 轮与第 3 轮的同一个数根本不在同一列上——「这几轮 TPS 稳不稳」「是哪一轮的首字慢了」
+ * 这种最常问的问题，反而没法竖着比出来。现在它与上面那张结果表用同一套做法：
+ * 列名只说一次，数据按列右对齐、等宽数字。
+ *
+ * 宽度按**列名**留的（`HTTP 状态`、`输出 Token` 比 `429`、`1.2k` 宽）：列宽跟着数据走的话，
+ * 一次失败把 `—` 换成 `429` 就会让整张明细横向跳一格。
+ */
+const ROUND_GRID_COLUMNS = 'md:grid-cols-[68px_56px_68px_80px_80px_76px_92px]'
 
 /**
  * 逐轮记录的**唯一来源**：新服务端给 `result.rounds`，老服务端只给一条总账。
@@ -102,13 +115,11 @@ function getResultRounds(result: ModelTestResult): ModelTestRoundResult[] {
 }
 
 const TEST_MODE_LABEL_KEYS: Record<ModelTestMode, UiCatalogKey> = {
-  connectivity: 'modelTest.mode.connectivity',
   streaming: 'modelTest.mode.streaming',
   speed: 'modelTest.mode.speed',
 }
 
 const TEST_MODE_HINT_KEYS: Record<ModelTestMode, UiCatalogKey> = {
-  connectivity: 'modelTest.mode.connectivityHint',
   streaming: 'modelTest.mode.streamingHint',
   speed: 'modelTest.mode.speedHint',
 }
@@ -204,12 +215,12 @@ function getTaskDurationLabel(task: TestTask): string {
   return task.result ? formatMilliseconds(task.result.durationMilliseconds) : '—'
 }
 
-/** 首字耗时只量得到流式：整包响应里没有「第一块」这个时刻，没量到就写 `—`，不编一个 0。 */
+/** 首字耗时只量得到流式，而这三种协议诊断都是流式；真没拿到首字就写 `—`，不编一个 0。 */
 function getTaskTtftLabel(task: TestTask): string {
   return task.result ? formatMilliseconds(task.result.ttftMilliseconds) : '—'
 }
 
-/** 出字速度只有速度诊断会给：其余模式里分母是两个数减出来的，宁缺勿编。 */
+/** 出字速度只有速度诊断会给：其余模式下分母是由两个时刻减出来的，宁缺勿编。 */
 function getTaskSpeedLabel(task: TestTask): string {
   if (!task.result) return '—'
   const speed = formatOutputSpeed(task.result.tokensPerSecond)
@@ -544,57 +555,69 @@ function TaskDetail(props: TestTaskDetailProps) {
   const successRate = Math.round((successCount / rounds.length) * 100)
   return (
     <div className="col-span-full rounded-lg border border-module-border">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/50 px-2.5 py-2 system-2xs-regular">
+      {/* 总账：标题钉在左边，三个事实各占一栏、标签在上值在下。
+          原先是一串 `标签 值` 连排后 `flex-wrap`，右半边整片空白，读起来像一行没排完的字；
+          分栏之后三件事各自有位置，也撑满了这一行的宽度。 */}
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2 border-b border-border/50 px-2.5 py-2">
         <span className="system-2xs-medium text-text-secondary">{t('modelTest.detail.summary')}</span>
-        <span className="text-text-tertiary">
-          {t('modelTest.detail.successRate')}{' '}
-          <span className={cn('font-mono tabular-nums', successRate === 100 ? 'text-text-success' : 'text-text-destructive')}>
-            {successCount}/{rounds.length} · {successRate}%
-          </span>
-        </span>
-        <span className="text-text-tertiary">
-          {t('modelTest.detail.protocol')}{' '}
-          <span className={cn('inline-flex items-center gap-1', props.task.converted ? 'text-text-warning' : 'text-text-secondary')}>
-            {props.task.converted && <Repeat size={9} aria-hidden />}
-            {PROTOCOL_DISPLAY_NAMES[props.task.protocol]}
-          </span>
-        </span>
-        <span className="text-text-tertiary">
-          {t('modelTest.detail.duration')}{' '}
-          <span className="font-mono tabular-nums text-text-secondary">{formatMilliseconds(props.task.result!.durationMilliseconds)}</span>
-        </span>
+        <div className="grid min-w-0 flex-1 grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-3">
+          <div className="min-w-0">
+            <div className="system-2xs-regular text-text-quaternary">{t('modelTest.detail.successRate')}</div>
+            <div className={cn('mt-0.5 font-mono system-2xs-regular tabular-nums', successRate === 100 ? 'text-text-success' : 'text-text-destructive')}>
+              {successCount}/{rounds.length} · {successRate}%
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div className="system-2xs-regular text-text-quaternary">{t('modelTest.detail.protocol')}</div>
+            <div className={cn('mt-0.5 inline-flex min-w-0 items-center gap-1 system-2xs-regular', props.task.converted ? 'text-text-warning' : 'text-text-secondary')}>
+              {props.task.converted && <Repeat size={9} aria-hidden className="shrink-0" />}
+              <span className="truncate">{PROTOCOL_DISPLAY_NAMES[props.task.protocol]}</span>
+            </div>
+          </div>
+          <div className="min-w-0">
+            <div className="system-2xs-regular text-text-quaternary">{t('modelTest.detail.duration')}</div>
+            <div className="mt-0.5 font-mono system-2xs-regular tabular-nums text-text-secondary">
+              {formatMilliseconds(props.task.result!.durationMilliseconds)}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="divide-y divide-border/40">
+        {/* 逐轮的列名只说一次：七组读数按列对齐之后，「哪一轮的首字最慢」才扫得出来。 */}
+        <div className={cn('hidden items-baseline gap-3 px-2.5 py-1.5 system-2xs-regular text-text-quaternary md:grid', ROUND_GRID_COLUMNS)}>
+          <span>{t('modelTest.detail.roundColumn')}</span>
+          <span>{t('modelTest.table.status')}</span>
+          <span>{t('modelTest.detail.httpStatus')}</span>
+          <span className="text-right">{t('modelTest.detail.ttft')}</span>
+          <span className="text-right">{t('modelTest.detail.duration')}</span>
+          <span className="text-right">{t('modelTest.detail.tps')}</span>
+          <span className="text-right">{t('modelTest.detail.outputTokens')}</span>
+        </div>
         {rounds.map(round => (
-          <div key={round.round} className="grid gap-1.5 px-2.5 py-2">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 system-2xs-regular">
-              <span className="shrink-0 font-mono tabular-nums text-text-quaternary">
-                {t('modelTest.detail.round', { round: round.round })}
-              </span>
-              <span className={cn('shrink-0 system-2xs-medium', round.success ? 'text-text-success' : 'text-text-destructive')}>
-                {t(TASK_STATUS_LABEL_KEYS[round.success ? 'success' : 'failed'])}
-              </span>
-              {round.statusCode && (
-                <span className="shrink-0 text-text-tertiary">{t('modelTest.detail.httpStatus')} <span className="font-mono tabular-nums">{round.statusCode}</span></span>
-              )}
-              <span className="shrink-0 text-text-tertiary">
-                {t('modelTest.detail.ttft')} <span className="font-mono tabular-nums">{formatMilliseconds(round.ttftMilliseconds)}</span>
-              </span>
-              <span className="shrink-0 text-text-tertiary">
-                {t('modelTest.detail.duration')} <span className="font-mono tabular-nums">{formatMilliseconds(round.durationMilliseconds)}</span>
-              </span>
-              <span className="shrink-0 text-text-tertiary">
-                {t('modelTest.detail.tps')} <span className="font-mono tabular-nums">{formatOutputSpeed(round.tokensPerSecond)}</span>
-              </span>
-              <span className="shrink-0 text-text-tertiary">
-                {t('modelTest.detail.outputTokens')} <span className="font-mono tabular-nums">{formatTokenCount(round.outputTokens)}</span>
-              </span>
+          <div key={round.round} className="px-2.5 py-2">
+            {/* 窄屏回到两列网格，每个格子自带标签（`TaskCell` 的 `labelKey`），
+                与上面那张结果表用的是同一条降级规则，不另设一套。 */}
+            <div className={cn('grid grid-cols-2 gap-x-3 gap-y-1.5 system-2xs-regular md:items-baseline md:gap-y-0', ROUND_GRID_COLUMNS)}>
+              {/* 轮次自带说明（「第 N 轮」本身就是一个标签），就不再给它加一格窄屏标签。 */}
+              <span className="font-mono tabular-nums text-text-quaternary">{t('modelTest.detail.round', { round: round.round })}</span>
+              <TaskCell labelKey="modelTest.table.status">
+                <span className={cn('system-2xs-medium', round.success ? 'text-text-success' : 'text-text-destructive')}>
+                  {t(TASK_STATUS_LABEL_KEYS[round.success ? 'success' : 'failed'])}
+                </span>
+              </TaskCell>
+              <TaskCell labelKey="modelTest.detail.httpStatus">
+                <span className="font-mono tabular-nums">{round.statusCode ?? '—'}</span>
+              </TaskCell>
+              <TaskCell labelKey="modelTest.detail.ttft" align="end">{formatMilliseconds(round.ttftMilliseconds)}</TaskCell>
+              <TaskCell labelKey="modelTest.detail.duration" align="end">{formatMilliseconds(round.durationMilliseconds)}</TaskCell>
+              <TaskCell labelKey="modelTest.detail.tps" align="end">{formatOutputSpeed(round.tokensPerSecond)}</TaskCell>
+              <TaskCell labelKey="modelTest.detail.outputTokens" align="end">{formatTokenCount(round.outputTokens)}</TaskCell>
             </div>
             {/* 失败那一轮的原话单独占一行：它通常很长（上游把整个 JSON 错误体回过来），
                 挤在指标后面会把那一行撑成乱码一样的窄柱。成功轮不印这一行，避免「无错误」刷屏。 */}
             {!round.success && (
-              <div className="wrap-break-word rounded-md border border-module-border bg-destructive/8 px-2 py-1.5 font-mono system-2xs-regular leading-4 text-text-destructive">
+              <div className="mt-1.5 wrap-break-word rounded-md border border-module-border bg-destructive/8 px-2 py-1.5 font-mono system-2xs-regular leading-4 text-text-destructive">
                 {round.errorMessage || t('modelTest.detail.noError')}
               </div>
             )}
@@ -880,7 +903,7 @@ export function ModelTestPanel(props: ModelTestPanelProps) {
   /** 展开的行。只存 id，收起时不渲染明细，几十行的表也不变卡。 */
   const [expandedTaskIds, setExpandedTaskIds] = useState<Set<string>>(new Set())
   /** 本轮诊断要问哪个问题。只影响「下一次开始」：已经有结论的行保留它自己跑的模式。 */
-  const [testMode, setTestMode] = useState<ModelTestMode>('connectivity')
+  const [testMode, setTestMode] = useState<ModelTestMode>('streaming')
   const previousOpen = useRef(false)
 
   /**
@@ -901,10 +924,27 @@ export function ModelTestPanel(props: ModelTestPanelProps) {
       let changed = false
       const next: Record<string, Set<Protocol>> = {}
       for (const model of enabledModels) {
-        const kept = new Set([...(current[model.id] ?? [])].filter(protocol => getTestableProtocols(model).includes(protocol)))
         const previous = current[model.id]
+        /*
+         * 没有显式选择的模型**不落条目**。
+         *
+         * 这里曾经写成 `current[model.id] ?? []` 再存回去，等于给每个模型materialize
+         * 一个空集；而 `plannedTasks` 的默认值是「没存过就全部可测协议」
+         * （`selectedModelProtocols[id] ?? getTestableProtocols(model)`）。
+         * 空集不是「没存过」，它绕过了那个默认值——于是所有模型的协议被清空、
+         * 待测计划归零、「开始诊断」永久变灰，点它当然毫无反应。
+         *
+         * 触发条件并不罕见：这个 effect 的依赖里带着 `enabledModels`，而模型列表每
+         * 30 秒轮询一次（引用每次都新）。StrictMode 更直接——它挂载后立刻把 effect
+         * 再跑一遍，面板一打开就中招。
+         *
+         * 「用户主动取消了全部协议」是另一回事：那时 `previous` 存在（就是空集），
+         * 该保留，所以按「有没有条目」区分，而不是按「是不是空集」区分。
+         */
+        if (!previous) continue
+        const kept = new Set([...previous].filter(protocol => getTestableProtocols(model).includes(protocol)))
         // `kept` 是 `previous` 的子集，长度相同就意味着一个都没被剔掉，可以沿用原 Set 引用。
-        if (previous && previous.size === kept.size) next[model.id] = previous
+        if (kept.size === previous.size) next[model.id] = previous
         else {
           next[model.id] = kept
           changed = true
@@ -926,8 +966,8 @@ export function ModelTestPanel(props: ModelTestPanelProps) {
       setView('results')
       // 测试参数**不在这里复位**：它记在本机，重开面板应该还看得见上一回填的值。
       // 每次重新打开都从默认模式开始：上次点到「速度诊断」后关掉面板，
-      // 下次再进来时应该看到默认的连通性诊断，而不是一个没被注意到的长提示词诊断。
-      setTestMode('connectivity')
+      // 下次再进来时应该看到默认的流式诊断，而不是一个没被注意到的长提示词诊断。
+      setTestMode('streaming')
     }
   }, [props.open, enabledModels, availableProviders, clear])
 

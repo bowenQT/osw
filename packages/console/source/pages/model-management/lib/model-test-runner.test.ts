@@ -54,7 +54,7 @@ function success(modelId: string, overrides: Record<string, unknown> = {}) {
         modelName: modelId,
         providerId: 'prov_1',
         providerName: '示例渠道',
-        mode: 'connectivity',
+        mode: 'streaming',
         success: true,
         durationMilliseconds: 120,
         statusCode: 200,
@@ -81,7 +81,7 @@ function task(overrides: Partial<TestTask> = {}): TestTask {
 
 const zh = createAppTranslator('zh-CN')
 
-const OPTIONS: TestRunOptions = { mode: 'connectivity', concurrency: 2, rounds: 1, prompt: '', inputLength: 0, translate: zh }
+const OPTIONS: TestRunOptions = { mode: 'streaming', concurrency: 2, rounds: 1, prompt: '', inputLength: 0, translate: zh }
 
 /** 等一轮微任务，让被 `await` 的链路往下走。 */
 const tick = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -268,24 +268,24 @@ describe('取消', () => {
     expect(runner.getSnapshot().tasks[0].status).toBe('success')
   })
 
-  it('dispose（切走页面）时掐掉在飞的请求，避免用户已经离开还在计费', () => {
+  it('detach（切走页面）时掐掉在飞的请求，避免用户已经离开还在计费', () => {
     holdRequests()
     const runner = new ModelTestRunner()
 
     void runner.run([task()], OPTIONS)
-    runner.dispose()
+    runner.detach()
 
     expect(inFlight[0].signal?.aborted).toBe(true)
   })
 
-  it('dispose 之后不再通知订阅者，队列剩下的收尾也不会把状态写回去', async () => {
+  it('detach 之后不再通知订阅者，队列剩下的收尾也不会把状态写回去', async () => {
     holdRequests()
     const runner = new ModelTestRunner()
     const listener = vi.fn()
     runner.subscribe(listener)
 
     void runner.run(['m1', 'm2'].map(modelId => task({ modelId })), OPTIONS)
-    runner.dispose()
+    runner.detach()
     listener.mockClear()
 
     inFlight[0].resolve(success('m1'))
@@ -293,6 +293,31 @@ describe('取消', () => {
     await tick()
 
     expect(listener).not.toHaveBeenCalled()
+  })
+
+  it('detach 是可逆的：重新订阅之后还能继续跑', async () => {
+    /*
+     * StrictMode 会把 effect 「挂载 → 清理 → 再挂载」跑一遍。如果清理是**不可逆**的
+     * （比如把某个标记永久置位），组件第一次挂载就把自己弄死了，而 `useMemo` 不会在
+     * 「假卸载」后重建实例——于是再点「开始诊断」永远没反应。
+     *
+     * 这里钉住的是执行器侧的契约：断了之后，重新订阅就该恢复能跑。
+     */
+    holdRequests()
+    const runner = new ModelTestRunner()
+
+    void runner.run([task()], OPTIONS)
+    runner.detach()
+    inFlight[0].resolve(success('m1'))
+    await tick()
+
+    runner.subscribe(vi.fn())
+    void runner.run([task()], OPTIONS)
+
+    expect(runMock).toHaveBeenCalledTimes(2)
+    inFlight[1].resolve(success('m1'))
+    await tick()
+    expect(runner.getSnapshot().tasks[0].status).toBe('success')
   })
 })
 

@@ -25,9 +25,6 @@ export const modelTestRoutes = new HttpRouter<ManagementHandler>()
 async function handleTestModels(req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void> {
   const request = ModelTestRunRequestSchema.parse(body)
   const { protocol, mode, rounds } = request
-  // 流式与速度都必须在流式形态下跑：速度诊断要的首字节时刻在整包响应里根本不存在，
-  // 所以「测速度」不是「连通性 + 多测几个数」，而是另一种请求写法。
-  const streaming = mode !== 'connectivity'
   const bodyOptions = { prompt: request.prompt?.trim() || undefined, inputLength: request.inputLength }
 
   const controller = new AbortController()
@@ -40,7 +37,7 @@ async function handleTestModels(req: IncomingMessage, res: ServerResponse, body:
   for (const plan of plans) {
     // 客户端断开时不再补后面的目标：上游请求已经随 `signal` 断掉，接着测只是白花钱。
     if (controller.signal.aborted) break
-    const roundResults = await runRounds({ plan, rounds, mode, streaming, bodyOptions, signal: controller.signal })
+    const roundResults = await runRounds({ plan, rounds, mode, bodyOptions, signal: controller.signal })
     if (roundResults.length === 0) continue
     results.push({
       modelId: plan.modelId,
@@ -69,7 +66,6 @@ interface RunRoundsInput {
   plan: DiagnosticTargetPlan
   rounds: number
   mode: ModelTestResult['mode']
-  streaming: boolean
   bodyOptions: { prompt?: string; inputLength: number }
   signal: AbortSignal
 }
@@ -103,7 +99,6 @@ async function runRounds(input: RunRoundsInput): Promise<ModelTestRoundResult[]>
       modelName: plan.modelName,
       converted: plan.converted,
       mode: input.mode,
-      streaming: input.streaming,
       bodyOptions: input.bodyOptions,
       signal,
       round,
