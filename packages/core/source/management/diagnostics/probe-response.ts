@@ -8,7 +8,7 @@ import { BufferedProxyResponse } from '../../proxy/response/proxy-response'
  * 界面用 `—` 占位——诊断面板宁可显示未知，也不编一个 0 出来。
  */
 export function readUsage(body: string): DiagnosticUsage {
-  const empty: DiagnosticUsage = { inputTokens: null, outputTokens: null }
+  const empty: DiagnosticUsage = { inputTokens: null, outputTokens: null, cachedInputTokens: null }
   try {
     const usage = (JSON.parse(body) as { usage?: Record<string, unknown> }).usage
     if (!usage) return empty
@@ -25,19 +25,29 @@ export function readUsage(body: string): DiagnosticUsage {
       }
       return fallback
     }
+    const promptDetails = usage.prompt_tokens_details as { cached_tokens?: unknown } | undefined
     return {
       inputTokens: pick('prompt_tokens', 'input_tokens'),
       outputTokens: pick('completion_tokens', 'output_tokens'),
+      // 缓存命中与 Input 一样是「上游报没报」的问题：检出 0 个也算报过，没这个字段才是 `null`。
+      cachedInputTokens: pick('cached_input_tokens', 'cache_read_input_tokens')
+        ?? (typeof promptDetails?.cached_tokens === 'number' ? promptDetails.cached_tokens : null),
     }
   } catch {
     return empty
   }
 }
 
-/** 一次探测读到的用量。`null` 是「上游没报」，不是「零个」。 */
+/**
+ * 一次探测读到的用量。`null` 是「上游没报」，不是「零个」。
+ *
+ * `cachedInputTokens` 是 `inputTokens` 的**子集**：它不额外加到总输入里，只是说这些
+ * 输入是缓存读回来的。缓存字段各家的名字比输入输出更不统一，因此完全交给累加器去认。
+ */
 export interface DiagnosticUsage {
   inputTokens: number | null
   outputTokens: number | null
+  cachedInputTokens: number | null
 }
 
 /**
@@ -72,6 +82,12 @@ export class StreamProbeResponse extends BufferedProxyResponse {
   usage(): DiagnosticUsage {
     this.tracker.flush()
     const usage = this.tracker.usage()
-    return { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }
+    return {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      // 缓存 token 由累加器认各种别名，这里原样透出：它是「提示词缓存到底有没有被用上」
+      // 的唯一证据，在这里丢掉就等于诊断永远回答不了这个问题。
+      cachedInputTokens: usage.cachedInputTokens,
+    }
   }
 }

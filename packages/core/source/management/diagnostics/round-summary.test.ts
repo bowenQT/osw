@@ -54,8 +54,27 @@ describe('diagnostic round summary', () => {
     const summary = summarizeRounds([round({ round: 1 })])
     expect(summary.inputTokens).toBeNull()
     expect(summary.outputTokens).toBeNull()
+    expect(summary.cachedInputTokens).toBeNull()
     expect(summary.ttftMilliseconds).toBeNull()
     expect(summary.tokensPerSecond).toBeNull()
+  })
+
+  it('缓存命中与输入取同一批轮次的均值：比率要属于真实的请求', () => {
+    const summary = summarizeRounds([
+      round({ round: 1, inputTokens: 1000, cachedInputTokens: 400 }),
+      round({ round: 2, inputTokens: 1000, cachedInputTokens: 600 }),
+    ])
+    // 命中 400 与 600 的均值是 500，输入两轮都是 1000——命中率 50%，不是两轮的 40% / 60%。
+    expect(summary.cachedInputTokens).toBe(500)
+    expect(summary.inputTokens).toBe(1000)
+  })
+
+  it('只有部分轮次报了缓存时不算成 0：没报就是没报', () => {
+    const summary = summarizeRounds([
+      round({ round: 1, inputTokens: 100, cachedInputTokens: null }),
+      round({ round: 2, inputTokens: 300, cachedInputTokens: 200 }),
+    ])
+    expect(summary.cachedInputTokens).toBe(200)
   })
 
   it('速度保留两位小数：均值会给出界面上毫无意义的精度', () => {

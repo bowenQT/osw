@@ -63,6 +63,13 @@ export interface ModelTestRoundResult {
   errorMessage?: string
   inputTokens?: number | null
   outputTokens?: number | null
+  /**
+   * 命中缓存的输入 Token：{@link inputTokens} 的**子集**，不是另一笔用量。
+   *
+   * 上游没报缓存字段时为 `null`——那与「命中了零个」不是一件事，界面据此写 `—`，
+   * 而不是算出一个 `0%` 的命中率（口径见 `@common/metrics` 的 `cacheHitRate`）。
+   */
+  cachedInputTokens?: number | null
   ttftMilliseconds?: number | null
   tokensPerSecond?: number | null
 }
@@ -87,6 +94,8 @@ export interface ModelTestResult {
   errorMessage?: string
   inputTokens?: number | null
   outputTokens?: number | null
+  /** 命中缓存的输入 Token（`inputTokens` 的子集），各轮均值；上游没报时为 `null`。 */
+  cachedInputTokens?: number | null
   /** 首字节耗时；只有流式/速度诊断量得到，其余模式与没收到正文时为 `null`。 */
   ttftMilliseconds?: number | null
   /**

@@ -171,6 +171,9 @@ function stubRunResults() {
       ttftMilliseconds: native ? 120 : null,
       tokensPerSecond: native ? 3.25 : null,
       outputTokens: native ? 12345 : null,
+      // 命中率要能看到「真的算了」：1000 输入里 640 是缓存读回来的，就是 64.0%。
+      inputTokens: native ? 1000 : null,
+      cachedInputTokens: native ? 640 : null,
       errorMessage: native ? undefined : 'invalid api key',
     }
     return { success: true, data: { results: [result] } }
@@ -354,7 +357,7 @@ describe('展开逐轮明细', () => {
     await waitFor(() => { expect(screen.queryByText(zh('modelTest.detail.successRate'))).toBeNull() })
   })
 
-  it('汇总是一排指标块：首字、耗时、TPS、用量各占一格', async () => {
+  it('汇总是一排指标块：成功率、首字、TPS、缓存命中率各占一格', async () => {
     stubRunResults()
     renderPanel()
     selectProvider()
@@ -370,20 +373,19 @@ describe('展开逐轮明细', () => {
      * 只在指标格里找：同一个词（TTFT / TPS / 输出 Token）在下面的逐轮表头里也有一份，
      * 在整行范围里断言会撞上「找到多个元素」。指标格是这一段唯一该被守的东西。
      */
-    const cards = [...nativeRow.querySelectorAll<HTMLElement>('[data-slot="diagnostic-metric"]')]
+    const cards = [...nativeRow.querySelectorAll<HTMLElement>('[data-slot="metric-card"]')]
     const labels = cards.map(card => card.firstElementChild?.textContent)
+    // 四格：耗时在上面的结果行里已有一格，Token 用量逐轮列在下面，不在这里重复。
     expect(labels).toEqual([
       zh('modelTest.detail.successRate'),
       zh('modelTest.detail.ttft'),
-      zh('modelTest.detail.duration'),
       zh('modelTest.detail.tps'),
-      zh('modelTest.detail.inputTokens'),
-      zh('modelTest.detail.outputTokens'),
+      zh('modelTest.detail.cacheHitRate'),
     ])
-    // `t/s` 是数值的一部分，不是另一列标签；没报输入 Token 时写 `—`。
-    expect(cards[3].lastElementChild?.textContent).toBe('3.3 t/s')
-    expect(cards[4].lastElementChild?.textContent).toBe('—')
-    expect(cards[5].lastElementChild?.textContent).toBe('12.3k')
+    // `t/s` 是数值的一部分，不是另一列标签。
+    expect(cards[2].lastElementChild?.textContent).toBe('3.3 t/s')
+    // 命中率是 640 ÷ 1000，与请求详情同一个 `formatPercent` 口径（一位小数）。
+    expect(cards[3].lastElementChild?.textContent).toBe('64.0%')
 
     // 逐轮表在下，两种读数不互相替代。
     expect(within(nativeRow).getByText(zh('modelTest.detail.round', { round: 1 }))).toBeTruthy()

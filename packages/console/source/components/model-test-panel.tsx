@@ -15,14 +15,14 @@ import {
   Trash2,
   TriangleAlert,
 } from 'lucide-react'
-import { formatMilliseconds, formatOutputSpeed, formatTokenCount } from '@common/metrics'
+import { cacheHitRate, formatMilliseconds, formatOutputSpeed, formatTokenCount } from '@common/metrics'
 import { ALL_MODEL_TEST_MODES, type ModelTestMode, type Protocol, type Provider, type ProviderModelRoute } from '@common/schemas'
 import type { UiCatalogKey } from '@common/i18n/catalogs'
 import { CONVERTIBLE_PROTOCOLS, PROTOCOL_DISPLAY_NAMES } from '@common/protocols'
 import type { ModelTestResult, ModelTestRoundResult } from '@common/diagnostics'
 import { InlineEmptyState } from '@/components/inline-empty-state'
 import { FormRow } from '@/components/form-kit'
-import type { MetricCardProps } from '@/components/metric-card'
+import { MetricCard, type MetricCardProps } from '@/components/metric-card'
 import { PROTOCOL_ICONS } from '@/components/protocol-icons'
 import { TableFrame, TableHeaderSurface, tableRowClass } from '@/components/table-primitives'
 import { Button } from '@/components/ui/button'
@@ -40,6 +40,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useTranslation, type AppTranslator } from '@/i18n/provider'
+import { formatPercent } from '@/lib/format-percent'
 import {
   Dialog,
   DialogContent,
@@ -544,69 +545,27 @@ function TaskCell(props: TaskCellProps) {
 }
 
 /**
- * 诊断明细里的一枚读数：只用**自己左边那一条竖线**和前一列隔开，不铺底、不描框。
+ * 展开体：一排指标块，下面一张带框的逐轮表。
  *
- * 三条路都试过了：描一圈 1px 的框，一排六枚就是二十四条细线，读者先看到的是网格；
- * 每枚铺一块灰底，展开区本来就在白卡里，再铺一层就是一整片灰（`parma` 在白底上
- * 只有约 3% 的亮度差，几乎看不见，等于什么都没铺）；把灰底上提到容器做成通栏底带
- * 更糟，格子只占左边一段时右端会拖出一条没内容的灰带。
- *
- * 留下的是「只有列间一条线」：线条没有消失，而是只画在读者真需要分界的地方。
- * 六枚读数是一条横向数据的六列，竖线就是列与列的语言；首列不画线，因为容器左缘
- * 已经说明了开始。层次交给排版：标签 11px 大写灰、值 13px 等宽深色。
- *
- * 与请求详情那枚 `MetricCard` 长得不一样是**故意的**：那边是卡中之卡的独立模块，
- * 每枚自带一圈框、各自成块；这里是同一行的一次诊断结果，六枚必须读成一排。
- */
-const DIAGNOSTIC_METRIC_CLASS = 'min-w-24 shrink-0 border-l border-border pl-3 first:border-l-0 first:pl-0'
-
-/**
- * 装一排诊断读数的容器：**只排行距，横向上不进任何背景**。
- *
- * 列间的线由读数自己的 `border-l` 画（见 `DIAGNOSTIC_METRIC_CLASS`）——这一点很关键：
- * 线条归属格子，就能跟着格子走。容器一旦自己铺底或描边，格子排不满时右边会拖出
- * 一段空灰或一条多出来的框。
- *
- * 固定宽 + `flex-wrap`，不用 `grid` + `1fr`：`1fr` 会把每格拉到填满整行，六个读数
- * 摊在一米宽的面板上，值就漂到格子另一头、与自己的标签分开。96px 起跳刚好装下
- * `12.3k` 与「输出 Token」（最长的那个标签）；窄容器里自动换行——换行后第二行首列
- * 会留下一条前导线，这是对的：那一行确实是在接着上一行的列往下排，线不该在这里断掉。
- */
-const DIAGNOSTIC_METRIC_STRIP_CLASS = 'flex flex-wrap gap-y-3'
-
-const DIAGNOSTIC_TONE_CLASS_NAMES: Record<NonNullable<MetricCardProps['tone']>, string> = {
-  default: 'text-text-primary',
-  success: 'text-text-success',
-  destructive: 'text-text-destructive',
-}
-
-function DiagnosticMetric(props: MetricCardProps) {
-  const empty = props.value === '—'
-  return (
-    <div data-slot="diagnostic-metric" className={DIAGNOSTIC_METRIC_CLASS}>
-      <div className="system-2xs-medium-uppercase text-text-tertiary">{props.label}</div>
-      <div
-        className={cn(
-          'mt-0.5 truncate font-mono system-sm-medium tabular-nums',
-          empty ? 'text-text-quaternary' : DIAGNOSTIC_TONE_CLASS_NAMES[props.tone ?? 'default'],
-        )}
-      >
-        {props.value}
-      </div>
-    </div>
-  )
-}
-
-/**
- * 展开体：先给一排指标块，再给逐轮。
+ * 这两段的形状不是这里发明的：它就是请求详情展开区的那两段。上一版给这个面板单独
+ * 造了一套读数样式（描框 → 铺灰 → 只剩列间竖线），每一版都不对，因为同一屏里
+ * 已经有一份经过验证的答案——**带框的指标芯片 + 带框的分块表**，靠的是同一套零件
+ * （`MetricCard` / `TableHeaderSurface`）。
  *
  * 为什么两段都要：多轮诊断的结论是「全部轮次都成功才算成功」，所以只看逐轮列表
  * 读不出「这个渠道到底算不算能用」；而只看汇总又不知道失败的那轮究竟回了什么。
  * 指标在上、逐轮在下，先回答「能不能用」，再回答「哪一轮、为什么」。
  *
- * 汇总这里**故意用指标块而不是一句结论**：诊断要回答的是「首字多快、出字多快、
- * 用量多少」这几件互相独立的事，写成一句话就只能挑一件说；摊成格子之后每个数各有
- * 各的位置。
+ * 汇总这里**故意用指标块而不是一句结论**：诊断要回答的是「这个渠道能不能用、
+ * 首字多快、出字多快、缓存有没有被用上」这几件互相独立的事，写成一句话就只能挑
+ * 一件说；摊成几块之后每个数各有各的位置。
+ *
+ * **四块，行内等分排满**。总耗时与输入 / 输出 Token 不进来：耗时在上面的结果行里
+ * 已经有一格，Token 用量在逐轮表里逐行列出——汇总区再抄一份，同一批数字就有了第二个
+ * 口径。缓存命中率不一样：它不是「用量」，而是「这个渠道的提示词缓存到底有没有被用上」
+ * 的一个判断——逐轮表里没有、结果行里也没有，不放到这里就没有地方能回答它。
+ * 四块用 `grid-cols-2 md:grid-cols-4` 而非 `auto-fill`：`auto-fill` 会把它们挤在左边
+ * 一小段，右边拖出一条空灰带；窄屏两行两列，避免四个数在手机上各自断行。
  *
  * 明细里不重复「渠道 / 模型 / 协议」——它们就在正上面那一行，重复一遍只是把
  * 一张小表拉长。
@@ -620,6 +579,12 @@ function TaskDetail(props: TestTaskDetailProps) {
   // 汇总值一律取服务端的 `result`（`summarizeRounds` 是唯一定义处），不在这里重算——
   // 界面再算一遍，同一个渠道就会在服务端日志和这张卡上有两个数。
   const speed = formatOutputSpeed(result.tokensPerSecond)
+  // 命中率不在这一层重算：服务端 `summarizeRounds` 已经把分子分母各自取了均值，
+  // 这里只把「比率」交给 `@common/metrics` 的唯一定义算一次。任一值为 `null`
+  // （上游压根没报缓存字段）就写 `—`，不能算成 `0%`——那是「一次都没命中」的说法。
+  const hitRate = result.cachedInputTokens == null || result.inputTokens == null
+    ? null
+    : cacheHitRate(result.cachedInputTokens, result.inputTokens)
   const metrics: MetricCardProps[] = [
     {
       label: t('modelTest.detail.successRate'),
@@ -628,31 +593,34 @@ function TaskDetail(props: TestTaskDetailProps) {
       tone: successRate === 100 ? 'success' : 'destructive',
     },
     { label: t('modelTest.detail.ttft'), value: formatMilliseconds(result.ttftMilliseconds) },
-    { label: t('modelTest.detail.duration'), value: formatMilliseconds(result.durationMilliseconds) },
     // 速度的单位跟着数值写在格子里：`t/s` 是这个数的一部分，不是一列需要被解释的标签。
     { label: t('modelTest.detail.tps'), value: speed === '—' ? '—' : `${speed} t/s` },
-    { label: t('modelTest.detail.inputTokens'), value: formatTokenCount(result.inputTokens) },
-    { label: t('modelTest.detail.outputTokens'), value: formatTokenCount(result.outputTokens) },
+    { label: t('modelTest.detail.cacheHitRate'), value: hitRate == null ? '—' : formatPercent(hitRate) },
   ]
   return (
     /*
-     * 展开区不套外框：这一行本来就住在 `TableFrame` 的白卡里，再描一圈只是把一块白底
-     * 隔成两块、白添四条线。
+     * 两段各自成块：上面一排带框的指标芯片，下面一个带框的分块表，中间留 12px 间距。
      *
-     * 但「不加外框」不等于「不加分界」。两段内容性质不同——上面是一组互不相干的读数，
-     * 下面是一张七列的表（列名对齐、逐行可扫）——混在一起没有分界时，读起来就是一片
-     * 漂着的小字，比有框的时候更难读。所以两段之间留一条发丝线，逐轮之间也留行分隔：
-     * 这是表的语法，不是装饰。要控的是**滑块总数**：两段之间 1 条 + 逐轮 N−1 条，
-     * 而不是外框一圈再叠一块灰底。
+     * 上面那排**不再是**一排无缝读数：芯片自带一圈框、彼此留缝，与请求详情里那排
+     * 一模一样（同一个 `MetricCard`）；只是那边指标多、走 `auto-fill`，这里固定四格、
+     * 等分撑满（见上面 `grid-cols-2 md:grid-cols-4` 的理由）。
+     *
+     * 下面这个块也不靠「两段之间一条发丝线 + 一堆 `divide-y`」来分界：它跟请求详情
+     * 的「路由 / 原始 Usage」一样，是一个圆角括起来的完整分块——表头铺 `bg-inset`、
+     * 行间有分隔线、最后一行不画线。逐轮是这个块的**内容**，不是浮在页面上的一排小字。
      */
     <div className="col-span-full">
-      <div className={DIAGNOSTIC_METRIC_STRIP_CLASS}>
-        {metrics.map(metric => <DiagnosticMetric key={metric.label} {...metric} />)}
+      {/* 固定四列（`grid-cols-*` 自带 `minmax(0,1fr)`，窄容器里也能收缩、不溢出）：
+          四块平分整行，不留右侧空带。 */}
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+        {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
       </div>
 
-      <div className="mt-3 border-t border-border/50 pt-1.5">
-        {/* 逐轮的列名只说一次：七组读数按列对齐之后，「哪一轮的首字最慢」才扫得出来。 */}
-        <div className={cn('hidden items-baseline gap-3 py-1 system-2xs-regular text-text-quaternary md:grid', ROUND_GRID_COLUMNS)}>
+      <section className="mt-3 overflow-hidden rounded-lg border border-module-border">
+        {/* 逐轮的列名只说一次：七组读数按列对齐之后，「哪一轮的首字最慢」才扫得出来。
+            窄屏上表头整条藏起来，每个格子自带标签（`TaskCell` 的 `labelKey`），
+            与上面那张结果表用的是同一条降级规则，不另设一套。 */}
+        <TableHeaderSurface className={cn('hidden items-baseline gap-3 px-3 py-2 md:grid', ROUND_GRID_COLUMNS)}>
           <span>{t('modelTest.detail.roundColumn')}</span>
           <span>{t('modelTest.table.status')}</span>
           <span>{t('modelTest.detail.httpStatus')}</span>
@@ -660,39 +628,37 @@ function TaskDetail(props: TestTaskDetailProps) {
           <span className="text-right">{t('modelTest.detail.duration')}</span>
           <span className="text-right">{t('modelTest.detail.tps')}</span>
           <span className="text-right">{t('modelTest.detail.outputTokens')}</span>
-        </div>
-        <div className="divide-y divide-border/40">
-          {rounds.map(round => (
-            <div key={round.round} className="py-1.5">
-              {/* 窄屏回到两列网格，每个格子自带标签（`TaskCell` 的 `labelKey`），
-                  与上面那张结果表用的是同一条降级规则，不另设一套。 */}
-              <div className={cn('grid grid-cols-2 gap-x-3 gap-y-1.5 system-2xs-regular md:items-baseline md:gap-y-0', ROUND_GRID_COLUMNS)}>
-                {/* 轮次自带说明（「第 N 轮」本身就是一个标签），就不再给它加一格窄屏标签。 */}
-                <span className="font-mono tabular-nums text-text-quaternary">{t('modelTest.detail.round', { round: round.round })}</span>
-                <TaskCell labelKey="modelTest.table.status">
-                  <span className={cn('system-2xs-medium', round.success ? 'text-text-success' : 'text-text-destructive')}>
-                    {t(TASK_STATUS_LABEL_KEYS[round.success ? 'success' : 'failed'])}
-                  </span>
-                </TaskCell>
-                <TaskCell labelKey="modelTest.detail.httpStatus">
-                  <span className="font-mono tabular-nums">{round.statusCode ?? '—'}</span>
-                </TaskCell>
-                <TaskCell labelKey="modelTest.detail.ttft" align="end">{formatMilliseconds(round.ttftMilliseconds)}</TaskCell>
-                <TaskCell labelKey="modelTest.detail.duration" align="end">{formatMilliseconds(round.durationMilliseconds)}</TaskCell>
-                <TaskCell labelKey="modelTest.detail.tps" align="end">{formatOutputSpeed(round.tokensPerSecond)}</TaskCell>
-                <TaskCell labelKey="modelTest.detail.outputTokens" align="end">{formatTokenCount(round.outputTokens)}</TaskCell>
-              </div>
-              {/* 失败那一轮的原话单独占一行：它通常很长（上游把整个 JSON 错误体回过来），
-                  挤在指标后面会把那一行撑成乱码一样的窄柱。成功轮不印这一行，避免「无错误」刷屏。 */}
-              {!round.success && (
-                <div className="mt-1.5 wrap-break-word rounded-md bg-destructive/8 px-2 py-1.5 font-mono system-2xs-regular leading-4 text-text-destructive">
-                  {round.errorMessage || t('modelTest.detail.noError')}
-                </div>
-              )}
+        </TableHeaderSurface>
+        {rounds.map(round => (
+          <div key={round.round} className="border-b border-border/40 px-3 py-2.5 last:border-0">
+            {/* 窄屏回到两列网格，每个格子自带标签（`TaskCell` 的 `labelKey`），
+                与上面那张结果表用的是同一条降级规则，不另设一套。 */}
+            <div className={cn('grid grid-cols-2 gap-x-3 gap-y-1.5 system-2xs-regular md:items-baseline md:gap-y-0', ROUND_GRID_COLUMNS)}>
+              {/* 轮次自带说明（「第 N 轮」本身就是一个标签），就不再给它加一格窄屏标签。 */}
+              <span className="font-mono tabular-nums text-text-quaternary">{t('modelTest.detail.round', { round: round.round })}</span>
+              <TaskCell labelKey="modelTest.table.status">
+                <span className={cn('system-2xs-medium', round.success ? 'text-text-success' : 'text-text-destructive')}>
+                  {t(TASK_STATUS_LABEL_KEYS[round.success ? 'success' : 'failed'])}
+                </span>
+              </TaskCell>
+              <TaskCell labelKey="modelTest.detail.httpStatus">
+                <span className="font-mono tabular-nums">{round.statusCode ?? '—'}</span>
+              </TaskCell>
+              <TaskCell labelKey="modelTest.detail.ttft" align="end">{formatMilliseconds(round.ttftMilliseconds)}</TaskCell>
+              <TaskCell labelKey="modelTest.detail.duration" align="end">{formatMilliseconds(round.durationMilliseconds)}</TaskCell>
+              <TaskCell labelKey="modelTest.detail.tps" align="end">{formatOutputSpeed(round.tokensPerSecond)}</TaskCell>
+              <TaskCell labelKey="modelTest.detail.outputTokens" align="end">{formatTokenCount(round.outputTokens)}</TaskCell>
             </div>
-          ))}
-        </div>
-      </div>
+            {/* 失败那一轮的原话单独占一行：它通常很长（上游把整个 JSON 错误体回过来），
+                挤在指标后面会把那一行撑成乱码一样的窄柱。成功轮不印这一行，避免「无错误」刷屏。 */}
+            {!round.success && (
+              <div className="mt-1.5 wrap-break-word rounded-md bg-destructive/8 px-2 py-1.5 font-mono system-2xs-regular leading-4 text-text-destructive">
+                {round.errorMessage || t('modelTest.detail.noError')}
+              </div>
+            )}
+          </div>
+        ))}
+      </section>
     </div>
   )
 }

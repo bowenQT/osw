@@ -9,20 +9,28 @@ import { StreamProbeResponse, readUsage } from './probe-response'
  */
 describe('diagnostic usage parsing', () => {
   it('认得 OpenAI、Responses 与 Anthropic 三套字段名', () => {
-    expect(readUsage('{"usage":{"prompt_tokens":12,"completion_tokens":7}}')).toEqual({ inputTokens: 12, outputTokens: 7 })
-    expect(readUsage('{"usage":{"input_tokens":12,"output_tokens":7}}')).toEqual({ inputTokens: 12, outputTokens: 7 })
+    const none = { cachedInputTokens: null }
+    expect(readUsage('{"usage":{"prompt_tokens":12,"completion_tokens":7}}')).toEqual({ inputTokens: 12, outputTokens: 7, ...none })
+    expect(readUsage('{"usage":{"input_tokens":12,"output_tokens":7}}')).toEqual({ inputTokens: 12, outputTokens: 7, ...none })
   })
 
   it('同一个 usage 里混着占位 0 与真实值时要取真实值', () => {
     // 与 observers/usage.ts 同口径：Chat 风格字段是占位 0 时不能盖住 Responses 风格的真实值。
     const body = '{"usage":{"prompt_tokens":0,"completion_tokens":0,"input_tokens":38829,"output_tokens":477}}'
-    expect(readUsage(body)).toEqual({ inputTokens: 38829, outputTokens: 477 })
+    expect(readUsage(body)).toEqual({ inputTokens: 38829, outputTokens: 477, cachedInputTokens: null })
+  })
+
+  it('缓存字段两种写法都认', () => {
+    expect(readUsage('{"usage":{"prompt_tokens":100,"cached_tokens":40}}').cachedInputTokens).toBeNull()
+    expect(readUsage('{"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":40}}}').cachedInputTokens).toBe(40)
+    expect(readUsage('{"usage":{"cache_read_input_tokens":40}}').cachedInputTokens).toBe(40)
   })
 
   it('读不到用量时返回 null，界面才好用 — 占位', () => {
-    expect(readUsage('{"choices":[]}')).toEqual({ inputTokens: null, outputTokens: null })
-    expect(readUsage('not json')).toEqual({ inputTokens: null, outputTokens: null })
-    expect(readUsage('{"usage":{"prompt_tokens":"12"}}')).toEqual({ inputTokens: null, outputTokens: null })
+    const none = { inputTokens: null, outputTokens: null, cachedInputTokens: null }
+    expect(readUsage('{"choices":[]}')).toEqual(none)
+    expect(readUsage('not json')).toEqual(none)
+    expect(readUsage('{"usage":{"prompt_tokens":"12"}}')).toEqual(none)
   })
 })
 
@@ -50,7 +58,7 @@ describe('diagnostic stream probe', () => {
     const probe = new StreamProbeResponse()
     probe.write('data: [DONE]\n\n')
     expect(probe.firstOutputElapsed(Date.now())).toBeNull()
-    expect(probe.usage()).toEqual({ inputTokens: null, outputTokens: null })
+    expect(probe.usage()).toEqual({ inputTokens: null, outputTokens: null, cachedInputTokens: null })
   })
 
   it('用量从流里读，并且认得被切开的半截帧', () => {
@@ -58,6 +66,13 @@ describe('diagnostic stream probe', () => {
     probe.write('data: {"usage":{"prompt_tokens":12,')
     probe.write('"completion_tokens":7}}\n\n')
     probe.write('data: [DONE]\n\n')
-    expect(probe.usage()).toEqual({ inputTokens: 12, outputTokens: 7 })
+    expect(probe.usage()).toEqual({ inputTokens: 12, outputTokens: 7, cachedInputTokens: null })
+  })
+
+  it('缓存命中的 token 不会被丢掉：它是「缓存到底用没用上」的唯一证据', () => {
+    const probe = new StreamProbeResponse()
+    probe.write('data: {"usage":{"input_tokens":1000,"prompt_tokens_details":{"cached_tokens":640}}}\n\n')
+    probe.write('data: [DONE]\n\n')
+    expect(probe.usage().cachedInputTokens).toBe(640)
   })
 })

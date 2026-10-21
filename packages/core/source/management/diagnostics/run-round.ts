@@ -78,6 +78,7 @@ export async function runDiagnosticRound(input: DiagnosticRoundInput): Promise<M
       errorMessage: success ? undefined : describeFailure(probe),
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
       ttftMilliseconds: probe.firstOutputElapsed(startedAt),
       // 速度是**派生值**，不是「速度诊断才量得到的量」：分子（输出 Token）与分母
       // （本次尝试耗时）在每一种模式下都已经握在手里了，所以这里按 `@common/metrics`
