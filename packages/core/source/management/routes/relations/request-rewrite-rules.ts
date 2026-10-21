@@ -59,8 +59,20 @@ export const requestRewriteRuleRoutes = new HttpRouter<ManagementHandler>()
     const input = TestSchema.parse(body)
     const disabled = disabledResponseStageReason({ actions: input.rule.actions, testCases: [input.testCase] })
     if (disabled) return sendError(res, 'RESPONSE_REWRITE_DISABLED', disabled, 400)
-    const parsedBody = JSON.parse(input.testCase.body) as object
-    const parsedHeaders = JSON.parse(input.testCase.headers) as Record<string, string | string[] | undefined>
+    // 正文和 headers 都是编辑器文本框的原文，半截 JSON 很常见。`JSON.parse` 抛出的
+    // `SyntaxError` 不是 `AppError`，边界会把它收成 500。这是输入问题，就地回 400。
+    let parsedBody: object
+    try {
+      parsedBody = JSON.parse(input.testCase.body) as object
+    } catch {
+      return sendError(res, 'VALIDATION_ERROR', 'Test case body is not valid JSON', 400)
+    }
+    let parsedHeaders: Record<string, string | string[] | undefined>
+    try {
+      parsedHeaders = JSON.parse(input.testCase.headers) as Record<string, string | string[] | undefined>
+    } catch {
+      return sendError(res, 'VALIDATION_ERROR', 'Test case headers are not valid JSON', 400)
+    }
     // 试跑入参是传输形态本身（与落库的用例字段同名），引擎认的是**交付形态**，
     // 因此在这里换算一次：用例里存的是「客户端跳的 transport」，而规则能不能动手
     // 取决于「手里有没有一整份正文」（见 `BodyDeliveryShape`）。
