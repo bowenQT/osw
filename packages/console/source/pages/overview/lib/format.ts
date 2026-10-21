@@ -23,12 +23,10 @@ export function formatBillTokens(tokens: number): string {
 /**
  * 百分比：固定一位小数。
  *
- * 账单、命中率、成功率共用同一口径，散在各处的 `${(x * 100).toFixed(1)}%` 会先漂成不同的
- * 小数位。调用方负责把 `null` 换掉（写 '—'），本函数只处理数字。
+ * 实现在 `@/lib/format-percent`：请求详情那排指标格要报缓存命中率，那个比率不能在这里
+ * 有一份、在那里再写一份（同一个数在两页写成不同小数位，就是两个数）。
  */
-export function formatPercent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`
-}
+export { formatPercent } from '@/lib/format-percent'
 
 /** 与 `formatCount` 同理：账单上的千分位也要跟随界面语言，不能用运行时默认语言。 */
 export function formatBillCount(locale: string, value: number): string {
