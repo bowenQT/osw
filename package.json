@@ -27,7 +27,7 @@
     "icons": "node apps/app/scripts/generate-icons.mjs",
     "screenshots": "node apps/app/scripts/screenshots.mjs",
     "lint": "node packages/toolkit/scripts/lint.mjs",
-    "lint:layers": "node packages/core/scripts/check-proxy-layers.mjs",
+    "lint:layers": "node packages/core/scripts/check-proxy-layers.mjs && node packages/console/scripts/check-console-layers.mjs && node packages/console/scripts/check-console-view-purity.mjs",
     "db": "node packages/core/scripts/db.mjs",
     "db:generate": "node packages/core/scripts/db.mjs generate",
     "test": "node packages/toolkit/scripts/test.mjs",

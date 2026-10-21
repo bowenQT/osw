@@ -22,6 +22,10 @@ const main = async () => {
     // 它只管三条会真的把业务逻辑焊死在 React 上的边界（传输层、领域层、渲染层），
     // 不试图规定整个目录的导入顺序——理由写在脚本头部。
     await run(process.execPath, ['packages/console/scripts/check-console-layers.mjs'], { cwd: repositoryRoot })
+    // 分层检查管「谁 import 谁」，管不到「一段纯逻辑直接写进 .tsx」——那种代码一条 import
+    // 规则都不违反。这条闸门守的就是它：视图文件不得持有模块级可变状态，模块作用域的纯函数
+    // 只准降不准升（新文件从 0 起算）。理由写在脚本头部。
+    await run(process.execPath, ['packages/console/scripts/check-console-view-purity.mjs'], { cwd: repositoryRoot })
     await run(process.execPath, ['packages/toolkit/scripts/check-package-boundaries.mjs'], { cwd: repositoryRoot })
     // 版本号写在仓库根与每一个 workspace 包的 manifest 里，而「哪几份会被提交」归
     // `release.yml` 里那行 `git add` 管——那是这条链路上唯一不是代码的清单。
