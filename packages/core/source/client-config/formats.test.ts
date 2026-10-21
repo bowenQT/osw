@@ -714,6 +714,57 @@ describe('toml editor', () => {
     expect(editor.serialize()).toBe('[model_providers.osw] # 本机服务\nname = "One Switch"\nwire_api = "responses"\n')
   })
 
+  it('strips a trailing comment that sits outside the scalar', () => {
+    const quoted = createConfigEditor('toml', 'model = "gpt-5.4" # work\n')
+    const literal = createConfigEditor('toml', "model = 'gpt-5.4' # work\n")
+    const bare = createConfigEditor('toml', 'model = gpt-5.4 # work\n')
+
+    // 引号外面的 `#` 才是注释。连着引号和注释读进去，写回去就会变成 `model = "\"gpt-5.4\" # work"`。
+    expect(quoted.get('model')).toBe('gpt-5.4')
+    expect(literal.get('model')).toBe('gpt-5.4')
+    expect(bare.get('model')).toBe('gpt-5.4')
+  })
+
+  it('keeps a hash that is inside a quoted scalar', () => {
+    const basic = createConfigEditor('toml', 'model = "gpt-5.4 # work" # real\n')
+    const literal = createConfigEditor('toml', "model = 'raw #1' # note\n")
+    const escaped = createConfigEditor('toml', 'note = "say \\"#\\" there" # real\n')
+    const apostrophe = createConfigEditor('toml', 'model = "it\'s # fine" # real\n')
+
+    expect(basic.get('model')).toBe('gpt-5.4 # work')
+    expect(literal.get('model')).toBe('raw #1')
+    expect(escaped.get('note')).toBe('say "#" there')
+    expect(apostrophe.get('model')).toBe("it's # fine")
+  })
+
+  it('keeps the trailing comment when it rewrites the scalar', () => {
+    const quoted = createConfigEditor('toml', 'model = "gpt-5.4" # work\n')
+    const literal = createConfigEditor('toml', "model = 'gpt-5.4' # work\n")
+    const bare = createConfigEditor('toml', 'model = gpt-5.4  # work\n')
+    const inside = createConfigEditor('toml', 'model = "gpt-5.4 # work" # real\n')
+
+    expect(quoted.get('model')).toBe('gpt-5.4')
+    quoted.set('model', 'gpt-5.4')
+    literal.set('model', 'gpt-5.4')
+    bare.set('model', 'gpt-5.5')
+    inside.set('model', 'gpt-5.4 # next')
+
+    // 表头上的行尾注释留在表头那一行；改值时同样把注释接在新值后面，而不是写进引号里。
+    expect(quoted.serialize()).toBe('model = "gpt-5.4" # work\n')
+    expect(literal.serialize()).toBe('model = "gpt-5.4" # work\n')
+    expect(bare.serialize()).toBe('model = "gpt-5.5"  # work\n')
+    expect(inside.serialize()).toBe('model = "gpt-5.4 # next" # real\n')
+  })
+
+  it('keeps a trailing comment when it rewrites a key inside a table', () => {
+    const editor = createConfigEditor('toml', '[model_providers.osw] # 本机服务\nname = "One Switch" # 显示名\n')
+
+    editor.setObject('model_providers.osw', { name: 'One Switch' })
+
+    // 表头注释本来就留着；表里被改写的那一行也把行尾注释接回去。
+    expect(editor.serialize()).toBe('[model_providers.osw] # 本机服务\nname = "One Switch" # 显示名\n')
+  })
+
   it('does not treat a commented-out header as a table', () => {
     const editor = createConfigEditor('toml', '# [model_providers.osw]\nmodel = "gpt-5"\n')
 
