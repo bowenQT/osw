@@ -320,8 +320,11 @@ function asRecord(value: unknown): RawUsage | null {
  * 判据只能是「0 是不是占位」——上游真报 0 时所有候选都是 0，此时回落值仍是 0，
  * 不会把「真实的 0」变成「没上报」。反过来只要有一个正数候选，它一定比占位 0 可信：
  * 没有哪家上游会用正数表达「没有用量」。
+ *
+ * 协议转换写回客户端的 usage 也调用它。观察器与转换层如果各写一条规则，
+ * 同一份报文会一边记对、一边把客户端看到的用量写成 0。
  */
-function firstNumber(...values: unknown[]): number | null {
+export function firstNumber(...values: unknown[]): number | null {
   let fallback: number | null = null
   for (const value of values) {
     if (typeof value !== 'number' || !Number.isFinite(value)) continue

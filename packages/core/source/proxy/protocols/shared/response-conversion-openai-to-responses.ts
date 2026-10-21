@@ -1,3 +1,4 @@
+import { firstNumber } from '@server/proxy/observers/usage'
 import { asArray, asNumber, asObject, asString, type Json } from './conversion-utils'
 import type { ToolNameRegistry } from './tool-name-registry'
 
@@ -27,12 +28,15 @@ type ToolItemKind = 'function' | 'custom'
  * image_tokens, text_tokens }`，Responses 的 `input_tokens_details` 只有
  * `{ cache_write_tokens, cached_tokens }`。两者字段集不同，必须挑字段而不是整体搬运，
  * 否则会输出 Responses 规范里不存在的键。
+ *
+ * 两套明细可能同时出现，并且 Chat 那套是占位 0。每个键单独走 `firstNumber`，
+ * 不能先用 `??` 选中整个对象。
  */
-function openAiInputDetailsToResponses(inputDetails: unknown): Json | undefined {
-  const details = asObject(inputDetails)
-  if (!details) return undefined
-  const cached = asNumber(details.cached_tokens)
-  const created = asNumber(details.cache_write_tokens)
+function openAiInputDetailsToResponses(promptDetails: unknown, inputDetails: unknown): Json | undefined {
+  const prompt = asObject(promptDetails)
+  const input = asObject(inputDetails)
+  const cached = firstNumber(prompt?.cached_tokens, input?.cached_tokens) ?? undefined
+  const created = firstNumber(prompt?.cache_write_tokens, input?.cache_write_tokens) ?? undefined
   if (cached === undefined && created === undefined) return undefined
   return {
     ...(created !== undefined ? { cache_write_tokens: created } : {}),
@@ -42,12 +46,15 @@ function openAiInputDetailsToResponses(inputDetails: unknown): Json | undefined 
 
 function openAiUsageToResponses(usage: Json | null): Json | undefined {
   if (!usage) return undefined
-  const input = asNumber(usage.prompt_tokens) ?? asNumber(usage.input_tokens)
-  const output = asNumber(usage.completion_tokens) ?? asNumber(usage.output_tokens)
+  // 与 Anthropic 方向、用量观察器同一条规则：占位 0 让位给后面的正数，全是 0 才回落到 0。
+  const input = firstNumber(usage.prompt_tokens, usage.input_tokens) ?? undefined
+  const output = firstNumber(usage.completion_tokens, usage.output_tokens) ?? undefined
   if (input === undefined && output === undefined) return undefined
-  const inputDetails = openAiInputDetailsToResponses(usage.prompt_tokens_details ?? usage.input_tokens_details)
-  const completionDetails = asObject(usage.completion_tokens_details) ?? asObject(usage.output_tokens_details)
-  const reasoning = asNumber(completionDetails?.reasoning_tokens)
+  const inputDetails = openAiInputDetailsToResponses(usage.prompt_tokens_details, usage.input_tokens_details)
+  const reasoning = firstNumber(
+    asObject(usage.completion_tokens_details)?.reasoning_tokens,
+    asObject(usage.output_tokens_details)?.reasoning_tokens,
+  ) ?? undefined
   return {
     ...(input !== undefined ? { input_tokens: input } : {}),
     ...(inputDetails ? { input_tokens_details: inputDetails } : {}),
