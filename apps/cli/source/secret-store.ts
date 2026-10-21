@@ -49,13 +49,20 @@ export const MASTER_KEY_ENVIRONMENT_VARIABLE = 'OSW_SECRET_KEY'
 
 export class EncryptedFileSecretStore implements SecretStore {
   private masterKey: Promise<Buffer> | null = null
+  /**
+   * 写入排队。管理接口同时处理多个请求，两次 `set` 若读到同一份 JSON，
+   * 后一次写回会盖掉先写入的密钥；供应商侧只存哈希，盖掉就找不回来。
+   */
+  private operation: Promise<void> = Promise.resolve()
 
   constructor(private readonly dataDirectory: string) {}
 
-  async set(reference: string, value: string): Promise<void> {
-    const secrets = await this.readSecrets()
-    secrets[reference] = await this.encrypt(value)
-    await this.writeSecrets(secrets)
+  set(reference: string, value: string): Promise<void> {
+    return this.runSerialized(async () => {
+      const secrets = await this.readSecrets()
+      secrets[reference] = await this.encrypt(value)
+      await this.writeSecrets(secrets)
+    })
   }
 
   async get(reference: string): Promise<string | null> {
@@ -64,11 +71,20 @@ export class EncryptedFileSecretStore implements SecretStore {
     return this.decrypt(encrypted, reference)
   }
 
-  async delete(reference: string): Promise<void> {
-    const secrets = await this.readSecrets()
-    if (!(reference in secrets)) return
-    delete secrets[reference]
-    await this.writeSecrets(secrets)
+  delete(reference: string): Promise<void> {
+    return this.runSerialized(async () => {
+      const secrets = await this.readSecrets()
+      if (!(reference in secrets)) return
+      delete secrets[reference]
+      await this.writeSecrets(secrets)
+    })
+  }
+
+  /** 失败的那次不能卡住后面的写入，所以链上的拒绝要吞掉；调用方拿到的仍是原来的那次拒绝。 */
+  private runSerialized(operation: () => Promise<void>): Promise<void> {
+    const result = this.operation.then(operation, operation)
+    this.operation = result.catch(() => undefined)
+    return result
   }
 
   private async encrypt(value: string): Promise<string> {
@@ -117,9 +133,16 @@ export class EncryptedFileSecretStore implements SecretStore {
   private async writeSecrets(secrets: Record<string, string>): Promise<void> {
     await fs.mkdir(this.dataDirectory, { recursive: true })
     const filePath = path.join(this.dataDirectory, SECRETS_FILE_NAME)
-    const temporaryPath = `${filePath}.tmp`
-    await fs.writeFile(temporaryPath, JSON.stringify(secrets), { mode: 0o600 })
-    await fs.rename(temporaryPath, filePath)
+    // 每次写入用自己的临时文件。共用一个 `.tmp` 时，后完成的 rename 会把先写好的文件挪走。
+    const temporaryPath = `${filePath}.${crypto.randomBytes(8).toString('hex')}.tmp`
+    try {
+      await fs.writeFile(temporaryPath, JSON.stringify(secrets), { mode: 0o600 })
+      await fs.rename(temporaryPath, filePath)
+    } catch (error) {
+      // 名字是随机的，下一次写入不会盖掉它。失败就删，避免把密文留在数据目录里。
+      await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+      throw error
+    }
   }
 }
 
