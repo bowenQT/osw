@@ -490,7 +490,8 @@ export function RequestLogDetailRow(props: RequestLogDetailRowProps) {
             </div>
           </div>
 
-          {/* auto-fill（而非 auto-fit）：只有一两个指标有值时也让格子保持统一宽度，不被拉满整行。 */}
+          {/* 格子宽度由 `MetricCard` 自己钉住，容器只排间距：指标只有两三个时它们也还是
+              一排小格，不会被拉成铺满整行的灰带。 */}
           <div className={METRIC_CARD_GRID_CLASS}>
             {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
           </div>

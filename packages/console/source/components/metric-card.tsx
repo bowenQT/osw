@@ -12,6 +12,17 @@ import { cn } from '@/lib/utils'
  * 只有两行，不加第三行补充说明：「缓存是否命中」这类上下文在各自的原始数据里
  * 都已有落点，在数值底下再写一遍只会稀释数字本身。空值走最淡的一档灰，
  * 让有数字的格子自己浮出来。
+ *
+ * **用一层底色，不用描边。** 一枚 1px 的框要画四条边，一排六枚就是二十四条细线；
+ * 凑在一起时读者先看到的是网格，不是数字。换成一档填色之后，格子与格子之间只靠
+ * 留白分开，读数自己成为画面里唯一有密度的地方——与协议槽
+ * （`PROTOCOL_TRACK_CLASS`）同一条理由。
+ *
+ * 填色用 `bg-workflow-block-parma-bg` 而不是 `bg-inset`：这两个令牌在亮色下近似同色
+ * （#f2f4f7 / #ebedf0），但在暗色里方向相反——`parma` 是卡面**之上**的一层
+ * （`rgb(255 255 255 / .05)`），凹槽是卡面**之下**的一层（5%）。同一块放在 `bg-card`
+ * 上，前者读作「抬起的芯片」，后者读作「整张卡被挖了六个洞」。详情卡是抬起来读的，
+ * 所以用前者。
  */
 export interface MetricCardProps {
   label: string
@@ -35,11 +46,11 @@ export function MetricCard(props: MetricCardProps) {
   const empty = props.value === '—'
 
   return (
-    <div data-slot="metric-card" className="rounded-lg border border-module-border px-3 py-2.5">
-      <div className="system-2xs-medium-uppercase tracking-wider text-text-tertiary">{props.label}</div>
+    <div data-slot="metric-card" className="w-26 shrink-0 rounded-md bg-workflow-block-parma-bg px-2.5 py-1.5">
+      <div className="system-2xs-medium-uppercase text-text-tertiary">{props.label}</div>
       <div
         className={cn(
-          'mt-1 truncate font-mono system-md-medium tabular-nums',
+          'mt-0.5 truncate font-mono system-sm-medium tabular-nums',
           empty ? 'text-text-quaternary' : TONE_CLASS_NAMES[props.tone ?? 'default'],
         )}
       >
@@ -50,12 +61,18 @@ export function MetricCard(props: MetricCardProps) {
 }
 
 /**
- * 装一排指标格的网格。
+ * 装一排指标格的容器。
  *
- * `auto-fill`（而非 `auto-fit`）：只有一两个指标有值时也让格子保持统一宽度，
- * 不被拉满整行——拉满之后「这里少了一格」这件事反而看不出来了。
+ * 固定宽 + `flex-wrap`，不用 `grid` + `1fr`：`1fr` 一定会把每格拉到把整行填满，
+ * 六个读数摊在一米宽的面板上，值就漂到格子另一头，与自己的标签分开——那就不再是
+ * 一枚「格子」，而是一条灰带。宽度钉死在 104px 后，一排六枚只占左边一小段，
+ * 剩下的横向空间留给下面的轮次表。
  *
- * 这条布局只写一处：请求详情与诊断明细装的是同一种格子，两处各写一份
- * 迟早在 `minmax` 上分岔，而分岔之后并排两张卡里的格子就对不齐了。
+ * 一条只有两行小字的格子不需要更宽：104px 刚好装下 `12.3k` 与「输出 Token」
+ * （最长的那个标签），再宽也只是把留白撑开。窄容器里排不下时自动换行，
+ * 不挤也不截断。
+ *
+ * 宽度写在两处会分岔（格子自己一个宽、外层轨道另一个宽），所以容器只管间距，
+ * 宽度由 `MetricCard` 自己负责。
  */
-export const METRIC_CARD_GRID_CLASS = 'grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-2'
+export const METRIC_CARD_GRID_CLASS = 'flex flex-wrap gap-1.5'

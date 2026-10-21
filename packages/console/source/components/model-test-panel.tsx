@@ -582,16 +582,23 @@ function TaskDetail(props: TestTaskDetailProps) {
     { label: t('modelTest.detail.outputTokens'), value: formatTokenCount(result.outputTokens) },
   ]
   return (
-    <div className="col-span-full rounded-lg border border-module-border">
-      <div className="border-b border-border/50 px-2.5 py-2.5">
-        <div className={METRIC_CARD_GRID_CLASS}>
-          {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
-        </div>
+    /*
+     * 展开区**不套盒子**。这一行本来就住在 `TableFrame` 的白卡里，再套一层描边
+     * 只是把一块白底隔成两块白底，中间多出四条细线；行与行之间再排一串 `divide-y`，
+     * 一整片看起来就是「灰底 + 很多道细线」，读数反而被线路淹了。
+     *
+     * 层次改由指标格那层填色承担：整块区域里唯一有色块的地方就是读数本身，
+     * 剩下的全靠留白分段落。第一格与上一行的间距把它和主行分开，
+     * 逐轮之间只留行高，不再画线。
+     */
+    <div className="col-span-full pb-0.5">
+      <div className={METRIC_CARD_GRID_CLASS}>
+        {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
       </div>
 
-      <div className="divide-y divide-border/40">
+      <div className="mt-2">
         {/* 逐轮的列名只说一次：七组读数按列对齐之后，「哪一轮的首字最慢」才扫得出来。 */}
-        <div className={cn('hidden items-baseline gap-3 px-2.5 py-1.5 system-2xs-regular text-text-quaternary md:grid', ROUND_GRID_COLUMNS)}>
+        <div className={cn('hidden items-baseline gap-3 system-2xs-regular text-text-quaternary md:grid', ROUND_GRID_COLUMNS)}>
           <span>{t('modelTest.detail.roundColumn')}</span>
           <span>{t('modelTest.table.status')}</span>
           <span>{t('modelTest.detail.httpStatus')}</span>
@@ -601,7 +608,7 @@ function TaskDetail(props: TestTaskDetailProps) {
           <span className="text-right">{t('modelTest.detail.outputTokens')}</span>
         </div>
         {rounds.map(round => (
-          <div key={round.round} className="px-2.5 py-2">
+          <div key={round.round} className="py-1">
             {/* 窄屏回到两列网格，每个格子自带标签（`TaskCell` 的 `labelKey`），
                 与上面那张结果表用的是同一条降级规则，不另设一套。 */}
             <div className={cn('grid grid-cols-2 gap-x-3 gap-y-1.5 system-2xs-regular md:items-baseline md:gap-y-0', ROUND_GRID_COLUMNS)}>
@@ -621,9 +628,10 @@ function TaskDetail(props: TestTaskDetailProps) {
               <TaskCell labelKey="modelTest.detail.outputTokens" align="end">{formatTokenCount(round.outputTokens)}</TaskCell>
             </div>
             {/* 失败那一轮的原话单独占一行：它通常很长（上游把整个 JSON 错误体回过来），
-                挤在指标后面会把那一行撑成乱码一样的窄柱。成功轮不印这一行，避免「无错误」刷屏。 */}
+                挤在指标后面会把那一行撑成乱码一样的窄柱。成功轮不印这一行，避免「无错误」刷屏。
+                这是整块展开区里唯一保留描边的东西——错误是一个需要被看见的事件，不是一个读数。 */}
             {!round.success && (
-              <div className="mt-1.5 wrap-break-word rounded-md border border-module-border bg-destructive/8 px-2 py-1.5 font-mono system-2xs-regular leading-4 text-text-destructive">
+              <div className="mt-1 wrap-break-word rounded-md bg-destructive/8 px-2 py-1.5 font-mono system-2xs-regular leading-4 text-text-destructive">
                 {round.errorMessage || t('modelTest.detail.noError')}
               </div>
             )}
@@ -657,7 +665,11 @@ function TestTaskRow(props: TestTaskRowProps) {
       className={cn(
         tableRowClass,
         'grid cursor-pointer grid-cols-1 gap-2.5 px-3 py-2.5 md:items-start md:gap-3',
-        expanded && 'bg-state-base-hover',
+        /*
+         * 展开时**不铺灰底**。整行连同明细一起变灰，会把下面那排指标格的填色
+         * 一起洗掉（灰上叠灰），看着就是「一大片灰」——而这正是展开区最需要
+         * 让读数浮出来的时刻。展开与否由箭头转 90° 与明细本身说，不靠底色。
+         */
         TASK_GRID_COLUMNS,
       )}
       onClick={props.onToggleExpanded}
