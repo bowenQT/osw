@@ -270,6 +270,22 @@ React 18 + TypeScript + shadcn/ui + Tailwind。**业务逻辑不认识 React，R
 5. `pnpm test:server` — 运行 Server/Vitest 测试
 6. `pnpm release:win`、`pnpm release:mac`、`pnpm release:linux` — 构建对应平台发布包
 
+### 提交信息
+
+格式是 `type(scope): summary`，summary 用**祈使句**、不带句号、不超过一行；破坏性变更在 type 后加 `!`，并在正文里写 `BREAKING CHANGE:`。type 取自 `feat` / `fix` / `perf` / `refactor` / `polish` / `style` / `docs` / `chore` / `ci` / `build` / `test` / `revert`——这张表同时是 `apps/app/scripts/release-notes.mjs` 的分组依据（见 [packaging.md](./packaging.md) 的发布说明一条），新增或改名必须两边一起改。
+
+**主题与正文一律用英文，不用中文。** 三条理由，任何一条单独成立：
+
+- **发布说明直接由提交生成，不手工维护。** `release-notes.mjs` 把提交标题原样搬进 GitHub Release，而说明文字固定英文（脚本注释里写着「提交主题按约定就是英文」）。中文提交会让每一版说明变成中英混排，用户点下载前看到的是半句中文半句英文。
+- **提交信息是给 `git log` 读的。** 排障时 `git log --grep`、`git blame`、`git bisect` 的上下文都在终端里，与代码里的标识符、日志、注释同一种语言，扫读时不用在两种语法之间切换。
+- **这是不可逆的一次性成本。** 提交写完就进了历史，改成英文要重写历史并强推（见下），而写的时候只是换个语言。
+
+中文只出现在**面向人的解释性文档**里——本目录、README、代码注释。提交信息不在此列：它是一份要被机器解析、被 diff 工具逐行比对的记录。
+
+仓库没有 `commitlint` 之类的钩子，规则靠提交时自查与评审。要回头看有没有漏网的，`git log --format='%s' | LC_ALL=C grep '[^ -~]'` 能一次列出所有含非 ASCII 字符的标题；发布前 `pnpm release:notes` 预览一遍说明，混进去的中文标题会在那里原形毕露。
+
+改写已推送的提交信息意味着重写历史，`main` 上必须用 `git filter-branch --msg-filter`（或 `git rebase -i --exec`）后 `git push --force-with-lease`，并事先确认没有别人在这条线上工作——改写后所有提交哈希都会变，别人的分支会立刻分叉。改之前先用 `git rev-parse HEAD^{tree}` 记下树哈希，改完对一遍：只改信息不该改变任何一个字节的内容。
+
 ## 决策回顾
 
 1. **代理服务纯 Node 化**：不依赖 Electron，可独立测试、未来抽 CLI
