@@ -2,7 +2,7 @@
 
 import * as React from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DateRangePicker, type DateRangeValue } from '@/components/date-range-picker'
 import { I18nProvider } from '@/i18n/provider'
 import { useLanguageStore } from '@/i18n/store'
@@ -58,6 +58,10 @@ function midnightOf(date: Date): number {
 }
 
 describe('日期区间选择器', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('未选日期时按钮显示占位文案', () => {
     wrap()
     expect(screen.getByRole('combobox', { name: '时间范围' }).textContent).toContain('选择日期范围')
@@ -79,8 +83,33 @@ describe('日期区间选择器', () => {
     fireEvent.click(screen.getByRole('combobox', { name: '时间范围' }))
     fireEvent.click(screen.getByRole('button', { name: '近 7 天' }))
 
-    const end = midnightOf(new Date())
-    expect(onChange).toHaveBeenCalledWith({ from: end - 6 * 24 * 60 * 60 * 1000, to: end })
+    const today = new Date()
+    const end = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
+    const from = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6).getTime()
+    expect(onChange).toHaveBeenCalledWith({ from, to: end })
+  })
+
+  it('近 7 天跨春令时从第 7 个日历日起，而不是再往前一天', () => {
+    const previousTz = process.env.TZ
+    process.env.TZ = 'America/New_York'
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 2, 14, 12))
+    try {
+      // 这条断言本身要求时区真的有夏令时，否则 24 小时减法碰巧也对，用例会空过。
+      expect(new Date(2026, 2, 9).getTime() - new Date(2026, 2, 8).getTime()).toBe(23 * 60 * 60 * 1000)
+      const onChange = wrap()
+
+      fireEvent.click(screen.getByRole('combobox', { name: '时间范围' }))
+      fireEvent.click(screen.getByRole('button', { name: '近 7 天' }))
+
+      expect(onChange).toHaveBeenCalledWith({
+        from: new Date(2026, 2, 8).getTime(),
+        to: new Date(2026, 2, 14).getTime(),
+      })
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ
+      else process.env.TZ = previousTz
+    }
   })
 
   it('单击一天只给出「有起点没终点」的半区间，弹层不关闭', () => {
