@@ -1,3 +1,4 @@
+import { firstNumber } from '@server/proxy/observers/usage'
 import { asArray, asNumber, asObject, asString, safeJsonParse, type Json } from './conversion-utils'
 
 /**
@@ -10,12 +11,16 @@ import { asArray, asNumber, asObject, asString, safeJsonParse, type Json } from 
 
 function openAiUsageToAnthropic(usage: Json | null): Json | undefined {
   if (!usage) return undefined
-  const input = asNumber(usage.prompt_tokens) ?? asNumber(usage.input_tokens)
-  const output = asNumber(usage.completion_tokens) ?? asNumber(usage.output_tokens)
+  // Chat 字段的占位 0 不能盖住 Responses 字段里的真实值。选择规则就是用量观察器的
+  // `firstNumber`：有正数用正数，候选全是 0 才回落到 0。这里不读 Anthropic 的
+  // `cache_read_input_tokens`：正的 `prompt_tokens` 已经是含缓存的总输入。
+  const input = firstNumber(usage.prompt_tokens, usage.input_tokens) ?? undefined
+  const output = firstNumber(usage.completion_tokens, usage.output_tokens) ?? undefined
   if (input === undefined && output === undefined) return undefined
-  const details = asObject(usage.prompt_tokens_details) ?? asObject(usage.input_tokens_details)
-  const cached = asNumber(details?.cached_tokens)
-  const created = asNumber(details?.cache_write_tokens)
+  const promptDetails = asObject(usage.prompt_tokens_details)
+  const inputDetails = asObject(usage.input_tokens_details)
+  const cached = firstNumber(promptDetails?.cached_tokens, inputDetails?.cached_tokens) ?? undefined
+  const created = firstNumber(promptDetails?.cache_write_tokens, inputDetails?.cache_write_tokens) ?? undefined
   const uncached = Math.max(0, (input ?? 0) - (cached ?? 0) - (created ?? 0))
   return {
     input_tokens: uncached,

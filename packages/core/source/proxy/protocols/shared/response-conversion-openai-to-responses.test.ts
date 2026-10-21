@@ -179,6 +179,69 @@ describe('openAiResponseToResponses', () => {
     })
   })
 
+  it('prefers responses-style counts when chat usage fields are placeholder zeros', () => {
+    // 与 Anthropic 方向同一份网关报文：Chat 字段是占位 0，真实值在 Responses 字段里。
+    // Responses 的 input_tokens 是总输入，不扣除 cached_tokens。
+    const result = openAiResponseToResponses({
+      choices: [{ message: { content: 'x' } }],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 0 },
+        input_tokens: 30,
+        output_tokens: 4,
+        input_tokens_details: { cached_tokens: 12 },
+        completion_tokens_details: { reasoning_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: 7 },
+      },
+    })
+
+    expect(result.usage).toEqual({
+      input_tokens: 30,
+      input_tokens_details: { cached_tokens: 12 },
+      output_tokens: 4,
+      output_tokens_details: { reasoning_tokens: 7 },
+      total_tokens: 34,
+    })
+  })
+
+  it('keeps a reported zero when every usage candidate is zero', () => {
+    const result = openAiResponseToResponses({
+      choices: [{ message: { content: 'x' } }],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 0 },
+        input_tokens: 0,
+        output_tokens: 0,
+        input_tokens_details: { cached_tokens: 0 },
+        completion_tokens_details: { reasoning_tokens: 0 },
+        output_tokens_details: { reasoning_tokens: 0 },
+      },
+    })
+
+    expect(result.usage).toEqual({
+      input_tokens: 0,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 0,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 0,
+    })
+  })
+
+  it('leaves a positive prompt total unchanged when only Anthropic cache fields are present', () => {
+    const result = openAiResponseToResponses({
+      choices: [{ message: { content: 'x' } }],
+      usage: { prompt_tokens: 30, completion_tokens: 4, cache_read_input_tokens: 12 },
+    })
+
+    expect(result.usage).toEqual({
+      input_tokens: 30,
+      output_tokens: 4,
+      total_tokens: 34,
+    })
+  })
+
   it('keeps only the Responses input token detail keys', () => {
     const result = openAiResponseToResponses({
       choices: [{ message: { content: 'x' } }],

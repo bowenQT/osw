@@ -66,6 +66,62 @@ describe('openAiResponseToAnthropic', () => {
     expect(result.usage).toEqual({ input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 7 })
   })
 
+  it('prefers responses-style counts when chat usage fields are placeholder zeros', () => {
+    // 聚合网关把两套字段塞进同一个 usage：Chat 的 prompt_tokens / completion_tokens /
+    // prompt_tokens_details.cached_tokens 是占位 0，真实值在 input_tokens / output_tokens /
+    // input_tokens_details.cached_tokens。停在第一个数字上会把客户端看到的用量写成全 0。
+    // Anthropic 的 input_tokens 只计未缓存输入，所以 30 要扣掉缓存 12。
+    const result = openAiResponseToAnthropic({
+      choices: [{ message: { content: 'x' }, finish_reason: 'stop' }],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 0 },
+        input_tokens: 30,
+        output_tokens: 4,
+        input_tokens_details: { cached_tokens: 12 },
+      },
+    })
+
+    expect(result.usage).toEqual({ input_tokens: 18, output_tokens: 4, cache_read_input_tokens: 12 })
+  })
+
+  it('keeps a reported zero when every usage candidate is zero', () => {
+    const result = openAiResponseToAnthropic({
+      choices: [{ message: { content: 'x' }, finish_reason: 'stop' }],
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        prompt_tokens_details: { cached_tokens: 0 },
+        input_tokens: 0,
+        output_tokens: 0,
+        input_tokens_details: { cached_tokens: 0 },
+      },
+    })
+
+    expect(result.usage).toEqual({ input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0 })
+  })
+
+  it('still subtracts cached tokens from a positive prompt total', () => {
+    const result = openAiResponseToAnthropic({
+      choices: [{ message: { content: 'x' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 30, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 12 } },
+    })
+
+    expect(result.usage).toEqual({ input_tokens: 18, output_tokens: 4, cache_read_input_tokens: 12 })
+  })
+
+  it('leaves a positive prompt total unchanged when only Anthropic cache fields are present', () => {
+    // prompt_tokens 已经是含缓存的总输入。旁边的 cache_read_input_tokens 不是
+    // OpenAI 的 cached_tokens，不能再从总输入里扣一次。
+    const result = openAiResponseToAnthropic({
+      choices: [{ message: { content: 'x' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 30, completion_tokens: 4, cache_read_input_tokens: 12 },
+    })
+
+    expect(result.usage).toEqual({ input_tokens: 30, output_tokens: 4 })
+  })
+
   it('ignores usage objects that carry no token counters', () => {
     const result = openAiResponseToAnthropic({ choices: [{ message: { content: 'x' } }], usage: {} })
     expect(result).toEqual({
