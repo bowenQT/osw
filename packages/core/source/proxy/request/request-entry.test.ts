@@ -1757,7 +1757,10 @@ describe('handleProxyRequest', () => {
     expect(requestUpdate).toEqual(expect.objectContaining({ captureStatus: 'captured', responseStatus: 200 }))
     const convertedCapture = JSON.parse(String(requestUpdate?.responseBody)) as { schemaVersion: number; chunks: string[] }
     expect(convertedCapture.schemaVersion).toBe(1)
-    const convertedEvents = convertedCapture.chunks.join('').split('\n\n').filter(Boolean).map(event => JSON.parse(event.replace('data: ', '')))
+    const convertedEvents = convertedCapture.chunks.join('').split('\n\n').filter(Boolean).map(event => {
+      const data = event.split('\n').find(line => line.startsWith('data:')) ?? ''
+      return JSON.parse(data.slice(5).trim())
+    })
     expect(convertedEvents.map(event => event.type)).toEqual([
       'message_start', 'content_block_start', 'content_block_delta',
       'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop',
