@@ -22,6 +22,7 @@ import { CONVERTIBLE_PROTOCOLS, PROTOCOL_DISPLAY_NAMES } from '@common/protocols
 import type { ModelTestResult, ModelTestRoundResult } from '@common/diagnostics'
 import { InlineEmptyState } from '@/components/inline-empty-state'
 import { FormRow } from '@/components/form-kit'
+import { METRIC_CARD_GRID_CLASS, MetricCard, type MetricCardProps } from '@/components/metric-card'
 import { PROTOCOL_ICONS } from '@/components/protocol-icons'
 import { TableFrame, TableHeaderSurface, tableRowClass } from '@/components/table-primitives'
 import { Button } from '@/components/ui/button'
@@ -220,7 +221,11 @@ function getTaskTtftLabel(task: TestTask): string {
   return task.result ? formatMilliseconds(task.result.ttftMilliseconds) : '—'
 }
 
-/** 出字速度只有速度诊断会给：其余模式下分母是由两个时刻减出来的，宁缺勿编。 */
+/**
+ * 速度是派生值（输出 Token ÷ 耗时），两种模式都会算出来，所以这里不做「这个模式没有速度」
+ * 的判断——有没有值只取决于上游给没给用量。读数的含义随模式变：`streaming` 的提示词只有
+ * 一个词，比值主要由首字等待决定；要看稳态出字速度得切到速度诊断。
+ */
 function getTaskSpeedLabel(task: TestTask): string {
   if (!task.result) return '—'
   const speed = formatOutputSpeed(task.result.tokensPerSecond)
@@ -539,47 +544,48 @@ function TaskCell(props: TaskCellProps) {
 }
 
 /**
- * 一行结果的展开体：先给一句总账，再给逐轮。
+ * 展开体：先给一排指标块，再给逐轮。
  *
  * 为什么两段都要：多轮诊断的结论是「全部轮次都成功才算成功」，所以只看逐轮列表
- * 读不出「这个渠道到底算不算能用」；而只看成功率又不知道失败的那轮究竟回了什么。
- * 总账在上、逐轮在下，先回答「能不能用」，再回答「哪一轮、为什么」。
+ * 读不出「这个渠道到底算不算能用」；而只看汇总又不知道失败的那轮究竟回了什么。
+ * 指标在上、逐轮在下，先回答「能不能用」，再回答「哪一轮、为什么」。
+ *
+ * 汇总这里**故意用指标块而不是一句结论**：诊断要回答的是「首字多快、出字多快、
+ * 用量多少」这几件互相独立的事，写成一句话就只能挑一件说；摊成格子之后每个数各有
+ * 各的位置，与请求详情里那张卡也是同一种东西——排查时从一条请求跳到一次诊断，
+ * 读数的地方不该换个样子。
  *
  * 明细里不重复「渠道 / 模型 / 协议」——它们就在正上面那一行，重复一遍只是把
  * 一张小表拉长。
  */
 function TaskDetail(props: TestTaskDetailProps) {
   const t = useTranslation()
-  const rounds = getResultRounds(props.task.result!)
+  const result = props.task.result!
+  const rounds = getResultRounds(result)
   const successCount = rounds.filter(round => round.success).length
   const successRate = Math.round((successCount / rounds.length) * 100)
+  // 汇总值一律取服务端的 `result`（`summarizeRounds` 是唯一定义处），不在这里重算——
+  // 界面再算一遍，同一个渠道就会在服务端日志和这张卡上有两个数。
+  const speed = formatOutputSpeed(result.tokensPerSecond)
+  const metrics: MetricCardProps[] = [
+    {
+      label: t('modelTest.detail.successRate'),
+      value: `${successCount}/${rounds.length} · ${successRate}%`,
+      // 只有「全过」算通过，所以没到 100% 就是失败：这个数的好坏本身就是结论。
+      tone: successRate === 100 ? 'success' : 'destructive',
+    },
+    { label: t('modelTest.detail.ttft'), value: formatMilliseconds(result.ttftMilliseconds) },
+    { label: t('modelTest.detail.duration'), value: formatMilliseconds(result.durationMilliseconds) },
+    // 速度的单位跟着数值写在格子里：`t/s` 是这个数的一部分，不是一列需要被解释的标签。
+    { label: t('modelTest.detail.tps'), value: speed === '—' ? '—' : `${speed} t/s` },
+    { label: t('modelTest.detail.inputTokens'), value: formatTokenCount(result.inputTokens) },
+    { label: t('modelTest.detail.outputTokens'), value: formatTokenCount(result.outputTokens) },
+  ]
   return (
     <div className="col-span-full rounded-lg border border-module-border">
-      {/* 总账：标题钉在左边，三个事实各占一栏、标签在上值在下。
-          原先是一串 `标签 值` 连排后 `flex-wrap`，右半边整片空白，读起来像一行没排完的字；
-          分栏之后三件事各自有位置，也撑满了这一行的宽度。 */}
-      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2 border-b border-border/50 px-2.5 py-2">
-        <span className="system-2xs-medium text-text-secondary">{t('modelTest.detail.summary')}</span>
-        <div className="grid min-w-0 flex-1 grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-3">
-          <div className="min-w-0">
-            <div className="system-2xs-regular text-text-quaternary">{t('modelTest.detail.successRate')}</div>
-            <div className={cn('mt-0.5 font-mono system-2xs-regular tabular-nums', successRate === 100 ? 'text-text-success' : 'text-text-destructive')}>
-              {successCount}/{rounds.length} · {successRate}%
-            </div>
-          </div>
-          <div className="min-w-0">
-            <div className="system-2xs-regular text-text-quaternary">{t('modelTest.detail.protocol')}</div>
-            <div className={cn('mt-0.5 inline-flex min-w-0 items-center gap-1 system-2xs-regular', props.task.converted ? 'text-text-warning' : 'text-text-secondary')}>
-              {props.task.converted && <Repeat size={9} aria-hidden className="shrink-0" />}
-              <span className="truncate">{PROTOCOL_DISPLAY_NAMES[props.task.protocol]}</span>
-            </div>
-          </div>
-          <div className="min-w-0">
-            <div className="system-2xs-regular text-text-quaternary">{t('modelTest.detail.duration')}</div>
-            <div className="mt-0.5 font-mono system-2xs-regular tabular-nums text-text-secondary">
-              {formatMilliseconds(props.task.result!.durationMilliseconds)}
-            </div>
-          </div>
+      <div className="border-b border-border/50 px-2.5 py-2.5">
+        <div className={METRIC_CARD_GRID_CLASS}>
+          {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
         </div>
       </div>
 

@@ -328,30 +328,65 @@ describe('协议列', () => {
 })
 
 describe('展开逐轮明细', () => {
-  it('收起时不渲染明细，点开才出现成功率与逐轮行', async () => {
+  it('收起时不渲染明细，点开才出现指标块与逐轮行', async () => {
     stubRunResults()
     renderPanel()
     selectProvider()
     startTest()
 
     await waitFor(() => { expect(expandToggles()).toHaveLength(4) })
-    expect(screen.queryByText(zh('modelTest.detail.summary'))).toBeNull()
+    expect(screen.queryByText(zh('modelTest.detail.successRate'))).toBeNull()
 
     const failedRow = expandToggles().find(row => row.textContent?.includes(CONVERTING_MODEL))!
     expect(failedRow.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(failedRow)
 
-    await waitFor(() => { expect(screen.getAllByText(zh('modelTest.detail.summary')).length).toBe(1) })
+    await waitFor(() => { expect(screen.getAllByText(zh('modelTest.detail.successRate')).length).toBe(1) })
     expect(expandToggles().find(row => row.textContent?.includes(CONVERTING_MODEL))!.getAttribute('aria-expanded')).toBe('true')
     // 单轮失败：0/1 轮成功，错误原文也在明细里。
     // 断言限定在这一行里：同一个模型排了三条任务，三条的失败原文都一样。
-    const detail = within(failedRow).getByText(zh('modelTest.detail.summary')).closest('div.col-span-full') as HTMLElement
+    const detail = within(failedRow).getByText(zh('modelTest.detail.successRate')).closest('div.col-span-full') as HTMLElement
     expect(within(detail).getByText('0/1 · 0%')).toBeTruthy()
     expect(within(detail).getByText('invalid api key')).toBeTruthy()
 
     // 再点一次收起，明细从 DOM 里消失。
     fireEvent.click(expandToggles().find(row => row.textContent?.includes(CONVERTING_MODEL))!)
-    await waitFor(() => { expect(screen.queryByText(zh('modelTest.detail.summary'))).toBeNull() })
+    await waitFor(() => { expect(screen.queryByText(zh('modelTest.detail.successRate'))).toBeNull() })
+  })
+
+  it('汇总是一排指标块：首字、耗时、TPS、用量各占一格', async () => {
+    stubRunResults()
+    renderPanel()
+    selectProvider()
+    startTest()
+
+    await waitFor(() => { expect(expandToggles()).toHaveLength(4) })
+    const nativeRow = expandToggles().find(row => row.textContent?.includes(NATIVE_MODEL))!
+    fireEvent.click(nativeRow)
+
+    await waitFor(() => { expect(within(nativeRow).getByText('1/1 · 100%')).toBeTruthy() })
+
+    /*
+     * 只在指标格里找：同一个词（TTFT / TPS / 输出 Token）在下面的逐轮表头里也有一份，
+     * 在整行范围里断言会撞上「找到多个元素」。指标格是这一段唯一该被守的东西。
+     */
+    const cards = [...nativeRow.querySelectorAll<HTMLElement>('[data-slot="metric-card"]')]
+    const labels = cards.map(card => card.firstElementChild?.textContent)
+    expect(labels).toEqual([
+      zh('modelTest.detail.successRate'),
+      zh('modelTest.detail.ttft'),
+      zh('modelTest.detail.duration'),
+      zh('modelTest.detail.tps'),
+      zh('modelTest.detail.inputTokens'),
+      zh('modelTest.detail.outputTokens'),
+    ])
+    // `t/s` 是数值的一部分，不是另一列标签；没报输入 Token 时写 `—`。
+    expect(cards[3].lastElementChild?.textContent).toBe('3.3 t/s')
+    expect(cards[4].lastElementChild?.textContent).toBe('—')
+    expect(cards[5].lastElementChild?.textContent).toBe('12.3k')
+
+    // 逐轮表在下，两种读数不互相替代。
+    expect(within(nativeRow).getByText(zh('modelTest.detail.round', { round: 1 }))).toBeTruthy()
   })
 
   it('服务端给了逐轮记录就逐轮列出来，成功率按轮次算', async () => {

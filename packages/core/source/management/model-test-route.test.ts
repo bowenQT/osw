@@ -357,7 +357,11 @@ describe('model test run route', () => {
 describe('model test run route — 诊断模式', () => {
   it('不给模式就是流式：分块形态 + SSE 头，首字也量得到', async () => {
     await seedModel('default-mode', 'openai-completions', 'https://api.example.com/v1/chat/completions')
-    mockUpstreamHandler = sseBody(SSE_CONTENT, SSE_USAGE)
+    // 耗时要真的大于 0，否则速度没有分母——替身秒回会让所有速度断言都退化成 null。
+    mockUpstreamHandler = async response => {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      sseBody(SSE_CONTENT, SSE_USAGE)(response)
+    }
 
     const response = mockResponse()
     await run({ protocol: 'openai-completions' }, response)
@@ -369,14 +373,17 @@ describe('model test run route — 诊断模式', () => {
       success: true,
     })
     expect(typeof results(response)[0].ttftMilliseconds).toBe('number')
-    // 流式诊断不量速度：那是速度诊断的事，模式之间不能互相冒充。
-    expect(results(response)[0].tokensPerSecond).toBeNull()
+    // 速度是派生值，与模式无关：分子分母在流式诊断里同样齐备，界面不该整列空着。
+    expect(results(response)[0].tokensPerSecond as number).toBeGreaterThan(0)
   })
 
   it('流式诊断走分块形态，并要求上游按 SSE 回', async () => {
     await seedModel('stream', 'openai-completions', 'https://api.example.com/v1/chat/completions')
     // 起始帧只报角色：它不算首字，所以首字只能由后面那帧内容决定。
-    mockUpstreamHandler = sseBody('{"choices":[{"delta":{"role":"assistant"}}]}', SSE_CONTENT, SSE_USAGE)
+    mockUpstreamHandler = async response => {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      sseBody('{"choices":[{"delta":{"role":"assistant"}}]}', SSE_CONTENT, SSE_USAGE)(response)
+    }
 
     const response = mockResponse()
     await run({ protocol: 'openai-completions', mode: 'streaming' }, response)
@@ -390,8 +397,12 @@ describe('model test run route — 诊断模式', () => {
       outputTokens: 400,
     })
     expect(typeof results(response)[0].ttftMilliseconds).toBe('number')
-    // 流式诊断不量速度：那是速度诊断的事，模式之间不能互相冒充。
-    expect(results(response)[0].tokensPerSecond).toBeNull()
+    // 与速度诊断同一口径：输出 Token ÷ 本次尝试耗时（含首字），不按模式另算一套。
+    const [result] = results(response)
+    expect(result.tokensPerSecond).toBeCloseTo(
+      tokensPerSecondFromTotals(result.outputTokens as number, result.durationMilliseconds as number)!,
+      1,
+    )
     expect(reported).toEqual([{ name: 'provider_tested', result: 'success' }])
   })
 
@@ -430,17 +441,30 @@ describe('model test run route — 诊断模式', () => {
     expect(result.tokensPerSecond).toBeCloseTo(tokensPerSecondFromTotals(400, durationMilliseconds)!, 1)
   })
 
-  it('速度诊断拿不到输出 Token 时不编一个速度出来', async () => {
+  it('拿不到输出 Token 时不编一个速度出来', async () => {
     await seedModel('no-usage', 'openai-completions', 'https://api.example.com/v1/chat/completions')
     mockUpstreamHandler = async response => {
       await new Promise(resolve => setTimeout(resolve, 5))
       sseBody(SSE_CONTENT, '{"choices":[]}')(response)
     }
 
-    const response = mockResponse()
-    await run({ protocol: 'openai-completions', mode: 'speed' }, response)
+    // 两种模式都要守同一条：没有分子就没有速度，「没测到」不能写成 0。
+    for (const mode of ['streaming', 'speed'] as const) {
+      const response = mockResponse()
+      await run({ protocol: 'openai-completions', mode }, response)
 
-    expect(results(response)[0]).toMatchObject({ success: true, outputTokens: null, tokensPerSecond: null })
+      expect(results(response)[0]).toMatchObject({ mode, success: true, outputTokens: null, tokensPerSecond: null })
+    }
+  })
+
+  it('失败轮次不给速度：上游没交付，比值不描述任何真实速度', async () => {
+    await seedModel('failed', 'openai-completions', 'https://api.example.com/v1/chat/completions')
+    mockUpstreamHandler = failure(401, JSON.stringify({ error: { message: 'invalid api key' } }))
+
+    const response = mockResponse()
+    await run({ protocol: 'openai-completions' }, response)
+
+    expect(results(response)[0]).toMatchObject({ success: false, tokensPerSecond: null })
   })
 
   it('未知模式在查模型之前就被拒掉', async () => {

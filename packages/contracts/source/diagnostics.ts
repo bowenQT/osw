@@ -89,7 +89,14 @@ export interface ModelTestResult {
   outputTokens?: number | null
   /** 首字节耗时；只有流式/速度诊断量得到，其余模式与没收到正文时为 `null`。 */
   ttftMilliseconds?: number | null
-  /** 输出速度；只有速度诊断且成功、且拿得到输出 Token 时才有值。 */
+  /**
+   * 输出速度：**派生值**，任何模式都算，分母是本次尝试的端到端耗时（含首字等待）。
+   *
+   * 失败轮与拿不到输出 Token 时为 `null`——「没有速度」和「速度为零」是两件事。
+   * 注意：`streaming` 模式的提示词只有一个词，这个比值基本由首字等待决定，读出来更接近
+   * 「首字的倒数」而不是稳态出字速度；要稳态速度得看 `speed` 模式。字段本身照样有值，
+   * 界面如实展示，不做猜测性的修正。
+   */
   tokensPerSecond?: number | null
   /** 逐轮明细：单轮时只有一条，老界面可以完全忽略这个字段。 */
   rounds?: ModelTestRoundResult[]

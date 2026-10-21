@@ -79,7 +79,14 @@ export async function runDiagnosticRound(input: DiagnosticRoundInput): Promise<M
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       ttftMilliseconds: probe.firstOutputElapsed(startedAt),
-      tokensPerSecond: success && input.mode === 'speed' ? tokensPerSecondFromTotals(usage.outputTokens ?? 0, durationMilliseconds) : null,
+      // 速度是**派生值**，不是「速度诊断才量得到的量」：分子（输出 Token）与分母
+      // （本次尝试耗时）在每一种模式下都已经握在手里了，所以这里按 `@common/metrics`
+      // 的唯一定义无条件算一次。按模式决定算不算，只会让默认的流式诊断在界面上
+      // 整列 `—`——那不是「没测到」，是「测得出来却不填」。
+      // 判据交给 `tokensPerSecondFromTotals`：没有输出 Token 就没有分子，耗时不正就没有
+      // 分母，两者都返回 `null`（「没有速度」与「速度为零」仍然分得开）。
+      // 失败的轮次不算：上游没交付，这个比值不描述任何真实速度。
+      tokensPerSecond: success ? tokensPerSecondFromTotals(usage.outputTokens ?? 0, durationMilliseconds) : null,
     }
   } catch (error) {
     return {

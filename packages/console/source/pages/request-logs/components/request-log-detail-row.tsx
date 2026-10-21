@@ -32,7 +32,7 @@ import {
   formatTransport,
 } from '../lib/format'
 import { RequestContentsSheet } from './request-contents-sheet'
-import { DetailSection, MetricCard, MetaFact, CopyIconButton, type MetricCardProps } from './request-detail-primitives'
+import { DetailSection, MetricCard, MetaFact, CopyIconButton, METRIC_CARD_GRID_CLASS, type MetricCardProps } from './request-detail-primitives'
 
 interface RequestLogDetailRowProps {
   /** 列表接口已经拿到的基础记录；详情接口还没回来时也能渲染头部与尝试列表。 */
@@ -491,7 +491,7 @@ export function RequestLogDetailRow(props: RequestLogDetailRowProps) {
           </div>
 
           {/* auto-fill（而非 auto-fit）：只有一两个指标有值时也让格子保持统一宽度，不被拉满整行。 */}
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-2">
+          <div className={METRIC_CARD_GRID_CLASS}>
             {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
           </div>
 
