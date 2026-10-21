@@ -1,4 +1,4 @@
-import { firstNumber } from '@server/proxy/observers/usage'
+import { firstNumber } from './usage'
 import { asArray, asNumber, asObject, asString, type Json } from './conversion-utils'
 import type { ToolNameRegistry } from './tool-name-registry'
 

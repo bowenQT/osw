@@ -1,4 +1,8 @@
 import type { ModelTestMode, Protocol } from '@common/schemas'
+import { padPrompt } from '../../proxy/protocols/shared/diagnostic-body'
+import { buildDiagnosticBody as buildAnthropicDiagnosticBody } from '../../proxy/protocols/anthropic-messages/diagnostic-body'
+import { buildDiagnosticBody as buildOpenAiCompletionsDiagnosticBody } from '../../proxy/protocols/openai-completions/diagnostic-body'
+import { buildDiagnosticBody as buildOpenAiResponsesDiagnosticBody } from '../../proxy/protocols/openai-responses/diagnostic-body'
 
 /**
  * 诊断请求体怎么拼：**三种协议各一种写法，一处写完**。
@@ -14,40 +18,11 @@ import type { ModelTestMode, Protocol } from '@common/schemas'
  */
 
 /**
- * 速度诊断的提示词与输出上限。
+ * 诊断请求的可选项。两者都只影响**这一次**发出去的正文，不写任何配置。
  *
- * 测速度需要一段**够长**的输出：一句话的回答里，出字快慢全被首字节和连接开销盖住。
- * 数数是最省事的长输出——它不需要模型「想」，也不需要采样温度，不同渠道之间可比。
+ * 提示词默认值、输出上限与补齐句子都是**协议级**的事实（三家协议的写法各不相同），
+ * 因此它们住在 `protocols/shared/diagnostic-body.ts` 与各自的协议模块里，这一层只做分发。
  */
-const SPEED_PROMPT = 'Count from 1 to 200, separated by single spaces. Output only the numbers.'
-
-/**
- * 速度诊断给直连 Anthropic 的输出上限。
- *
- * `/v1/messages` 把 `max_tokens` 当必填，不给就是 400；而转换层在不给时会补一个 4096
- * 的上限，一句「Hi」理论上有成本风险。所以普通诊断压到最小值，速度诊断放大到够数完
- * 1 到 200——16 个 Token 会把数数掐断，那时量到的就不是出字速度，而是上限速度。
- */
-const SPEED_MAX_TOKENS = 512
-
-/** 普通诊断给直连 Anthropic 的输出上限。只要一个字节，越小越省。 */
-const DEFAULT_MAX_TOKENS = 16
-
-/** 各模式在用户没写提示词时用的默认值。 */
-const DEFAULT_PROMPTS: Record<ModelTestMode, string> = {
-  streaming: 'Hi',
-  speed: SPEED_PROMPT,
-}
-
-/**
- * 「输入长度」靠这段中性句子补齐。
- *
- * 它必须是可忽略的填充文本：诊断量的是链路的耗时与出字，不是模型读得懂不懂。
- * 用一句固定的英文而不是随机串，是为了让同一组配置在不同渠道之间可比。
- */
-const LENGTH_PADDING_SENTENCE = 'Ignore the following filler text, it only exists to make this diagnostic request longer. '
-
-/** 诊断请求的可选项。两者都只影响**这一次**发出去的正文，不写任何配置。 */
 export interface DiagnosticBodyOptions {
   /** 自定义提示词；不传/空串时按模式取默认值。 */
   prompt?: string
@@ -63,22 +38,7 @@ export interface DiagnosticBodyOptions {
   stream?: boolean
 }
 
-/**
- * 把提示词补齐到指定长度。
- *
- * 「输入长度」量的是**长上下文下的链路表现**（预填充耗时、网关缓冲），所以补的是中性的
- * 填充句子而不是重复同一个字符：多数网关会把重复字符压掉，那样长度就白加了。
- * 只补不截：用户写的提示词已经超过目标长度时，尊重他写的那份。
- */
-export function padPrompt(prompt: string, inputLength: number): string {
-  if (inputLength <= 0 || prompt.length >= inputLength) return prompt
-  // 分隔符也算长度：先扣掉那 `\n\n`，否则补出来的正文总比用户填的目标多两个字。
-  const separator = '\n\n'
-  const paddingLength = inputLength - prompt.length - separator.length
-  if (paddingLength <= 0) return prompt
-  const repeats = Math.ceil(paddingLength / LENGTH_PADDING_SENTENCE.length)
-  return `${prompt}${separator}${LENGTH_PADDING_SENTENCE.repeat(repeats).slice(0, paddingLength)}`
-}
+export { padPrompt }
 
 /**
  * 诊断请求正文。
@@ -95,32 +55,12 @@ export function padPrompt(prompt: string, inputLength: number): string {
  * 上游也只认这个字段（Anthropic 同样是给 `stream` 才回 SSE）。
  */
 export function buildDiagnosticBody(protocol: Protocol, modelId: string, converted: boolean, mode: ModelTestMode = 'streaming', options: DiagnosticBodyOptions = {}): string {
-  const basePrompt = options.prompt?.trim() || DEFAULT_PROMPTS[mode]
-  const prompt = padPrompt(basePrompt, options.inputLength ?? 0)
-  const stream = options.stream ?? true
   switch (protocol) {
     case 'openai-completions':
-      return JSON.stringify({
-        model: modelId,
-        ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
-        messages: [{ role: 'user', content: prompt }],
-      })
+      return buildOpenAiCompletionsDiagnosticBody(modelId, options, mode)
     case 'openai-responses':
-      return JSON.stringify({
-        model: modelId,
-        // Responses 的 `stream_options` 官方只有 `include_obfuscation`，但 OpenAI 兼容网关
-        // （以及本仓的转换层）一律按 Chat 风格认 `include_usage`。真实请求经过协议适配器时
-        // 不会自动补这个字段（`OpenAiResponsesNativeAdapter` 刻意原样保留），所以只能在这里写。
-        // 不认这个字段的上游会忽略它，不会因此报错。
-        ...(stream ? { stream: true, stream_options: { include_usage: true } } : {}),
-        input: [{ role: 'user', content: prompt }],
-      })
+      return buildOpenAiResponsesDiagnosticBody(modelId, options)
     case 'anthropic-messages':
-      return JSON.stringify({
-        model: modelId,
-        ...(converted ? {} : { max_tokens: mode === 'speed' ? SPEED_MAX_TOKENS : DEFAULT_MAX_TOKENS }),
-        ...(stream ? { stream: true } : {}),
-        messages: [{ role: 'user', content: prompt }],
-      })
+      return buildAnthropicDiagnosticBody(modelId, converted, mode, options)
   }
 }
