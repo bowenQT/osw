@@ -34,7 +34,40 @@ interface TrendTooltipProps {
   crossesDays: boolean
 }
 
-// Tooltip 按阅读顺序展示；柱状图按从底到顶反向排列，使输入位于最上层。
+interface TrendBarPoint extends UsageTrendPoint {
+  /** 未缓存输入。总输入减去缓存读取与缓存写入，不小于 0。 */
+  uncachedInputTokens: number
+  /** 不含思考的输出，不小于 0。 */
+  plainOutputTokens: number
+}
+
+/**
+ * 柱子要互不相交的五段；Tooltip 仍写落库的总量。
+ *
+ * `inputTokens` 已经是总输入：OpenAI 的 `prompt_tokens` 含缓存，只有缺少这份正数总输入时，
+ * 观测层才按 Anthropic 语义把 cache read 与 cache write 加回去。`outputTokens` 含推理 Token。
+ * 卡片上的 Token 总量只加输入与输出，所以缓存和思考不能再叠在父级上面。
+ * 未缓存输入是 `input - cache read - cache write`，不含思考的输出是 `output - reasoning`，
+ * 减出来的负数截到 0。
+ *
+ * Tooltip 不跟着改成这两截：同一页的缓存命中率是「缓存读取 ÷ 输入总量」，
+ * 「输入」必须仍是那个分母。
+ */
+function disjointTrendPoint(point: UsageTrendPoint): TrendBarPoint {
+  const cacheRead = Math.max(0, point.cachedInputTokens)
+  const cacheWrite = Math.max(0, point.cacheCreationInputTokens)
+  const reasoning = Math.max(0, point.reasoningTokens)
+  return {
+    ...point,
+    cachedInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheWrite,
+    reasoningTokens: reasoning,
+    uncachedInputTokens: Math.max(0, point.inputTokens - cacheRead - cacheWrite),
+    plainOutputTokens: Math.max(0, point.outputTokens - reasoning),
+  }
+}
+
+// Tooltip 按阅读顺序展示落库总量；柱状图从底到顶排互不相交的段，使未缓存输入位于最上层。
 const USAGE_ITEMS = [
   ['inputTokens', 'overview.trend.input'],
   ['cachedInputTokens', 'overview.trend.cacheRead'],
@@ -43,7 +76,13 @@ const USAGE_ITEMS = [
   ['reasoningTokens', 'overview.trend.reasoning'],
 ] as const satisfies ReadonlyArray<readonly [keyof UsageTrendPoint, UiCatalogKey]>
 
-const STACK_ITEMS = [...USAGE_ITEMS].reverse()
+const STACK_SERIES = [
+  { key: 'reasoningTokens', color: 'reasoningTokens' },
+  { key: 'plainOutputTokens', color: 'outputTokens' },
+  { key: 'cacheCreationInputTokens', color: 'cacheCreationInputTokens' },
+  { key: 'cachedInputTokens', color: 'cachedInputTokens' },
+  { key: 'uncachedInputTokens', color: 'inputTokens' },
+] as const satisfies ReadonlyArray<{ key: keyof TrendBarPoint; color: keyof UsageTrendPoint }>
 
 function TrendTooltip(props: TrendTooltipProps) {
   const { active, label, payload, crossesDays } = props
@@ -94,7 +133,7 @@ export function TrendBars(props: TrendBarsProps) {
 
   return (
     <ChartContainer config={buildChartConfig(t)} className="aspect-auto h-44 w-full">
-      <BarChart data={trend} margin={{ top: 8, right: 4, bottom: 0, left: 0 }} barCategoryGap="25%">
+      <BarChart data={trend.map(disjointTrendPoint)} margin={{ top: 8, right: 4, bottom: 0, left: 0 }} barCategoryGap="25%">
         <CartesianGrid vertical={false} />
         <XAxis
           dataKey="label"
@@ -115,8 +154,8 @@ export function TrendBars(props: TrendBarsProps) {
           fontSize={11}
         />
         <Tooltip content={<TrendTooltip crossesDays={crossesDays} />} />
-        {STACK_ITEMS.map(([key], index) => (
-          <Bar key={key} dataKey={key} stackId="usage" fill={`var(--color-${key})`} radius={index === STACK_ITEMS.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]} />
+        {STACK_SERIES.map(({ key, color }, index) => (
+          <Bar key={key} dataKey={key} stackId="usage" fill={`var(--color-${color})`} radius={index === STACK_SERIES.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]} />
         ))}
       </BarChart>
     </ChartContainer>
