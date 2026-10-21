@@ -5,6 +5,7 @@ import { FilterBar } from '@/components/filter-bar'
 import { SearchableSelect } from '@/components/searchable-select'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useTranslation } from '@/i18n/provider'
+import { shiftLocalCalendarDays } from '@/lib/calendar-day'
 import type { RequestLogFilter } from '../service'
 
 export type StatusFilter = 'all' | 'pending' | 'success' | 'failed' | 'cancelled'
@@ -20,11 +21,10 @@ interface RequestLogsFiltersProps {
 
 const protocolOptions: readonly Protocol[] = ['openai-responses', 'openai-completions', 'anthropic-messages']
 
-/** 结束日按「含当天」折算成时间戳：选到 2026-01-15 就要包含这一整天，取次日零点。 */
-const DAY_MS = 24 * 60 * 60 * 1000
-
 export function RequestLogsFilters(props: RequestLogsFiltersProps) {
   const t = useTranslation()
+  // 选择器的结束日是当天零点（含当天）。查询是 `createdTime < createdTimeTo`，上界取次日零点。
+  const inclusiveTo = props.filter.createdTimeTo === null ? null : shiftLocalCalendarDays(props.filter.createdTimeTo, -1)
   return (
     <FilterBar dataScreenshot="request-logs-filters">
       <SearchableSelect
@@ -57,10 +57,10 @@ export function RequestLogsFilters(props: RequestLogsFiltersProps) {
       <DateRangePicker
         label={t('requestLogs.filters.dateRange')}
         className="w-64"
-        value={{ from: props.filter.createdTimeFrom, to: props.filter.createdTimeTo === null ? null : props.filter.createdTimeTo - DAY_MS }}
+        value={{ from: props.filter.createdTimeFrom, to: inclusiveTo }}
         onChange={value => props.applyFilter({
           createdTimeFrom: value.from,
-          createdTimeTo: value.to === null ? null : value.to + DAY_MS,
+          createdTimeTo: value.to === null ? null : shiftLocalCalendarDays(value.to, 1),
         })}
       />
       <span className="system-xs-regular text-text-tertiary">{t('requestLogs.filters.totalCount', { count: props.total })}</span>
