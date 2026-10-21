@@ -65,6 +65,10 @@ export interface ConfigEditor {
    *
    * 值允许嵌套（JSON 的 provider 表项里就有 `options`），但 TOML 与 `.env` 都只有一层，
    * 遇到嵌套会明确报错而不是写出一份语法坏掉的文件。
+   *
+   * 命中已有对象时只更新 `value` 里声明的键，用户自己加的键留在原处。JSON 与 YAML 的嵌套对象
+   * 按键再往下合并，数组与标量整段换成模板的值；TOML 只有一层标量，嵌套仍按上面的规则报错。
+   * 整段换掉会把那些键删掉，而我们没有资格判断它们过时了没有。
    */
   setObject(path: string, value: Record<string, unknown>): string | null
   /** 序列化回文件文本。 */
@@ -179,7 +183,7 @@ class JsonConfigEditor implements ConfigEditor {
   }
 
   /**
-   * 整段写一个对象。
+   * 写一个对象。命中已有对象时按键合并（见 `mergeTemplateObject`），没有这个键时整段插入。
    *
    * 返回**命中已有键时**它在原文里的样子（调用方拿它当「改前」）；新插入时返回 `null`。
    * 两者都不是唯一信号：写入之后还可能被 `verify` 拦下，那时抛错，「上次写的是什么」
@@ -188,8 +192,8 @@ class JsonConfigEditor implements ConfigEditor {
   setObject(path: string, value: Record<string, unknown>): string | null {
     const segments = splitPath(path)
     if (segments.length === 0) return null
-    const entry = { ...value }
     const before = this.rawValue(segments)
+    const entry = applyTemplateObject(getInObject(this.data, segments), value)
     // 在文本里写之前先动对象：值里有没有 `undefined`（会把自己序列化没）、数组里有没有空洞，
     // 只有序列化一次才知道。改完对象再改文本，两者才可能严格一致——否则 `verify` 会拦下
     // 一份「文本合法、但不是我们想写的东西」的文件，而那是我们自己的 bug，不该报给用户。
@@ -438,24 +442,28 @@ class JsonEntryListConfigEditor implements ConfigEditor {
   }
 
   /**
-   * 整段写一个条目对象。
+   * 写一个条目对象。命中已有对象时按键合并（见 `mergeTemplateObject`），没有这条时整段追加。
    *
    * 返回命中已有条目时它在原文里的样子（调用方拿它当「改前」）；新插入时返回 `null`。
-   * 只有一段路径（`osw`）时命中的就是条目本身（整条替换/追加）；更深时命中的是条目内部的键。
+   * 只有一段路径（`osw`）时命中的就是条目本身；更深时命中的是条目内部的键。
    */
   setObject(path: string, value: Record<string, unknown>): string | null {
     const segments = splitPath(path)
     if (segments.length === 0) return null
     const before = this.rawValue(segments)
-    // 数据视图也要跟上：单段路径是整条替换/追加，多段路径是往条目内部的键覆盖。
+    // 数据视图也要跟上：单段路径是整条合并/追加，多段路径是往条目内部的键合并。
     if (segments.length === 1) {
       const index = this.entryIndexOf(segments[0]!)
-      if (index >= 0) this.data[index] = value
-      else this.data.push(value)
+      const entry = applyTemplateObject(index >= 0 ? this.data[index] : undefined, value)
+      if (index >= 0) this.data[index] = entry
+      else this.data.push(entry)
+      this.text = this.writeObject(segments, entry)
     } else {
-      setInObject(this.ensureEntry(segments[0]!), segments.slice(1), value)
+      const host = this.ensureEntry(segments[0]!)
+      const entry = applyTemplateObject(getInObject(host, segments.slice(1)), value)
+      setInObject(host, segments.slice(1), entry)
+      this.text = this.writeObject(segments, entry)
     }
-    this.text = this.writeObject(segments, value)
     this.verify()
     return before
   }
@@ -675,6 +683,33 @@ function getInObject(target: Record<string, unknown>, segments: string[]): unkno
     current = (current as Record<string, unknown>)[segment]
   }
   return current
+}
+
+/** 普通对象（不是数组、不是 `null`）。数组按模板整段替换，不跟对象一样按键合并。 */
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * 把模板合并进已有对象：只覆盖模板声明的键，其余键留在原处。
+ *
+ * 两边都是普通对象时按键再往下一层（模板给的空对象没有要更新的键，里面用户的字段还在）；
+ * 数组、标量、以及类型对不上的值，整段换成模板的。键的顺序沿用原文，新键接在后面——
+ * 下一次用同一份模板再写一遍，排出来的文本才是同一份。
+ */
+function mergeTemplateObject(existing: Record<string, unknown>, template: Record<string, unknown>): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...existing }
+  for (const [key, incoming] of Object.entries(template)) {
+    if (incoming === undefined) continue
+    const current = merged[key]
+    merged[key] = isPlainRecord(current) && isPlainRecord(incoming) ? mergeTemplateObject(current, incoming) : incoming
+  }
+  return merged
+}
+
+/** 已有对象就合并，否则用模板本身（浅拷贝，免得调用方之后改到编辑器手里的那份）。 */
+function applyTemplateObject(current: unknown, template: Record<string, unknown>): Record<string, unknown> {
+  return isPlainRecord(current) ? mergeTemplateObject(current, template) : { ...template }
 }
 
 function setInObject(target: Record<string, unknown>, segments: string[], value: unknown): void {
@@ -1204,7 +1239,10 @@ class YamlConfigEditor implements ConfigEditor {
     const before = existing && (isMap(existing) || isSeq(existing)) ? JSON.stringify(existing.toJSON()) : null
     const at = this.container(segments, true)
     if (!at) return null
-    at.map.set(at.key, toYamlNode(value))
+    const node = at.map.get(at.key, true)
+    // 已有映射就按键合并，注释和用户自己的键留在原节点上；没有、或那里不是映射，才整段换上。
+    if (isMap(node)) mergeYamlMap(node, value)
+    else at.map.set(at.key, toYamlNode(value))
     return before
   }
 
@@ -1374,6 +1412,31 @@ function scalarText(node: unknown): string | null {
   }
   if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') return String(node)
   return null
+}
+
+/**
+ * 把模板合并进已有映射：只动模板声明的键。
+ *
+ * 值没变的键不碰——行尾注释挂在那个节点上，换个节点注释就没了。两边都是映射时按键再往下
+ * 走；数组和标量整段换成模板的值（`toYamlNode`）。用户加在这张表上的键不在模板里，留在原处。
+ */
+function mergeYamlMap(target: YAMLMap, template: Record<string, unknown>): void {
+  for (const [key, incoming] of Object.entries(template)) {
+    if (incoming === undefined) continue
+    const current = target.get(key, true)
+    if (isMap(current) && isPlainRecord(incoming)) {
+      mergeYamlMap(current, incoming)
+      continue
+    }
+    if (current !== undefined && JSON.stringify(yamlNodeJson(current)) === JSON.stringify(incoming)) continue
+    target.set(key, toYamlNode(incoming))
+  }
+}
+
+/** AST 节点上的普通值；已经是普通值时原样交回。 */
+function yamlNodeJson(node: unknown): unknown {
+  if (isScalar(node) || isMap(node) || isSeq(node)) return node.toJSON()
+  return node
 }
 
 /** 普通 JS 值 → YAML AST 节点；对象/数组带着类型一起建，标量交给 `Scalar` 定夺真正的类型。 */
