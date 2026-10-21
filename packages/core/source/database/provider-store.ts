@@ -68,6 +68,9 @@ export async function updateProvider(id: string, updates: Partial<Omit<Provider,
   const time = now()
   const existing = db.select().from(providers).where(eq(providers.id, id)).get()
   if (!existing) throw resourceNotFoundError('provider', id)
+  // 供应商行的 UPDATE 带 `deletedTime IS NULL`，名字写不进去；设置行的 upsert 没有这道条件，
+  // 超时仍会被写进去，返回值却是请求拼出来的新名字。已删除的行按找不到处理，写库之前就停。
+  if (existing.deletedTime !== null) throw resourceNotFoundError('provider', id)
   const next = ProviderSchema.parse({ ...mapProvider(existing), ...updates, id, createdTime: Number(existing.createdTime), updatedTime: time })
   // 供应商行与两条设置行是一次修改：中间失败会让保存的结果只生效一半。
   db.transaction(transaction => {
