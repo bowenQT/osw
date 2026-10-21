@@ -995,13 +995,17 @@ class TomlConfigEditor implements ConfigEditor {
     const { section, key } = splitTomlPath(path)
     // TOML 有真布尔/数字，但我们的场景只有字符串（地址、模型名、provider id）值得写；
     // 其余一律按文本写，不做类型猜测。
-    const line = `${key} = ${formatTomlScalar(typeof value === 'string' ? value : String(value))}`
+    const rendered = formatTomlScalar(typeof value === 'string' ? value : String(value))
     const lineIndex = this.findScalarLine(section, key)
     if (lineIndex >= 0) {
-      const before = parseTomlScalar(this.lines[lineIndex]!)
+      const current = this.lines[lineIndex]!
+      const before = parseTomlScalar(current)
+      // 行尾注释留在这一行上，和表头后面的注释一样：那是用户写的，不该跟值一起被换掉。
+      const line = `${key} = ${rendered}${splitTomlAssignment(current).comment}`
       this.lines[lineIndex] = line
       return before
     }
+    const line = `${key} = ${rendered}`
     // 表还不存在：先把表头立起来。`findSectionEnd` 在找不到表时返回 `-1`，拿它 `+1`
     // 当插入点会把键写在文件第 0 行——那个键就成了根键，跑到别的表里去了。
     if (section !== null && this.findSectionEnd(section) < 0) {
@@ -1038,8 +1042,9 @@ class TomlConfigEditor implements ConfigEditor {
       if (typeof entry !== 'string') {
         throw new ConfigParseError(`toml provider entry "${key}" must be a string`)
       }
-      const line = `${key} = ${formatTomlScalar(entry)}`
       const lineIndex = this.findScalarLine(path, key)
+      const comment = lineIndex >= 0 ? splitTomlAssignment(this.lines[lineIndex]!).comment : ''
+      const line = `${key} = ${formatTomlScalar(entry)}${comment}`
       if (lineIndex >= 0) {
         this.lines[lineIndex] = line
         continue
@@ -1129,7 +1134,7 @@ function splitTomlPath(path: string): { section: string | null; key: string } {
 }
 
 function parseTomlScalar(line: string): string | null {
-  const raw = line.slice(line.indexOf('=') + 1).trim()
+  const raw = splitTomlAssignment(line).raw
   if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
     return raw.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\')
   }
@@ -1138,6 +1143,52 @@ function parseTomlScalar(line: string): string | null {
   // 数组 / 内联表：读不出来，当作「没有值」，而不是把它当成字符串回显出去。
   if (raw.startsWith('[') || raw.startsWith('{')) return null
   return raw
+}
+
+/**
+ * 把一行赋值拆成「等号右边的标量原文」和「引号外的行尾注释」。
+ *
+ * `#` 只有写在引号外面才是注释。基本字符串认 `\"`，字面字符串没有转义，
+ * 所以 `"gpt-5.4 # work"` 和 `'raw #1'` 里的 `#` 都还是值。
+ * 不先切开，`model = "gpt-5.4" # work` 会连引号和注释一起被当成模型名，
+ * 再写回去就成了 `model = "\"gpt-5.4\" # work"`。
+ */
+function splitTomlAssignment(line: string): { raw: string; comment: string } {
+  const equalsAt = line.indexOf('=')
+  const tail = equalsAt < 0 ? '' : line.slice(equalsAt + 1)
+  const commentAt = indexOfTomlComment(tail)
+  if (commentAt < 0) return { raw: tail.trim(), comment: '' }
+  let separator = commentAt
+  while (separator > 0 && (tail[separator - 1] === ' ' || tail[separator - 1] === '\t')) separator -= 1
+  return { raw: tail.slice(0, separator).trim(), comment: tail.slice(separator) }
+}
+
+function indexOfTomlComment(text: string): number {
+  let index = 0
+  while (index < text.length) {
+    const character = text[index]!
+    if (character === '#') return index
+    if (character === '"' || character === "'") {
+      index = skipTomlString(text, index, character)
+      continue
+    }
+    index += 1
+  }
+  return -1
+}
+
+/** 从开引号走到闭引号之后。基本字符串里的 `\"` 不结束字符串，字面字符串不认转义。 */
+function skipTomlString(text: string, start: number, quote: '"' | "'"): number {
+  let index = start + 1
+  while (index < text.length) {
+    if (quote === '"' && text[index] === '\\') {
+      index += index + 1 < text.length ? 2 : 1
+      continue
+    }
+    if (text[index] === quote) return index + 1
+    index += 1
+  }
+  return text.length
 }
 
 function formatTomlScalar(value: string): string {
