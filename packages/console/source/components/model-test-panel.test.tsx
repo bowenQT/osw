@@ -370,7 +370,7 @@ describe('展开逐轮明细', () => {
      * 只在指标格里找：同一个词（TTFT / TPS / 输出 Token）在下面的逐轮表头里也有一份，
      * 在整行范围里断言会撞上「找到多个元素」。指标格是这一段唯一该被守的东西。
      */
-    const cards = [...nativeRow.querySelectorAll<HTMLElement>('[data-slot="metric-card"]')]
+    const cards = [...nativeRow.querySelectorAll<HTMLElement>('[data-slot="diagnostic-metric"]')]
     const labels = cards.map(card => card.firstElementChild?.textContent)
     expect(labels).toEqual([
       zh('modelTest.detail.successRate'),

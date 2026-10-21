@@ -22,7 +22,7 @@ import { CONVERTIBLE_PROTOCOLS, PROTOCOL_DISPLAY_NAMES } from '@common/protocols
 import type { ModelTestResult, ModelTestRoundResult } from '@common/diagnostics'
 import { InlineEmptyState } from '@/components/inline-empty-state'
 import { FormRow } from '@/components/form-kit'
-import { METRIC_CARD_GRID_CLASS, MetricCard, type MetricCardProps } from '@/components/metric-card'
+import type { MetricCardProps } from '@/components/metric-card'
 import { PROTOCOL_ICONS } from '@/components/protocol-icons'
 import { TableFrame, TableHeaderSurface, tableRowClass } from '@/components/table-primitives'
 import { Button } from '@/components/ui/button'
@@ -544,6 +544,60 @@ function TaskCell(props: TaskCellProps) {
 }
 
 /**
+ * 诊断明细里的一枚读数：只用**自己左边那一条竖线**和前一列隔开，不铺底、不描框。
+ *
+ * 三条路都试过了：描一圈 1px 的框，一排六枚就是二十四条细线，读者先看到的是网格；
+ * 每枚铺一块灰底，展开区本来就在白卡里，再铺一层就是一整片灰（`parma` 在白底上
+ * 只有约 3% 的亮度差，几乎看不见，等于什么都没铺）；把灰底上提到容器做成通栏底带
+ * 更糟，格子只占左边一段时右端会拖出一条没内容的灰带。
+ *
+ * 留下的是「只有列间一条线」：线条没有消失，而是只画在读者真需要分界的地方。
+ * 六枚读数是一条横向数据的六列，竖线就是列与列的语言；首列不画线，因为容器左缘
+ * 已经说明了开始。层次交给排版：标签 11px 大写灰、值 13px 等宽深色。
+ *
+ * 与请求详情那枚 `MetricCard` 长得不一样是**故意的**：那边是卡中之卡的独立模块，
+ * 每枚自带一圈框、各自成块；这里是同一行的一次诊断结果，六枚必须读成一排。
+ */
+const DIAGNOSTIC_METRIC_CLASS = 'min-w-24 shrink-0 border-l border-border pl-3 first:border-l-0 first:pl-0'
+
+/**
+ * 装一排诊断读数的容器：**只排行距，横向上不进任何背景**。
+ *
+ * 列间的线由读数自己的 `border-l` 画（见 `DIAGNOSTIC_METRIC_CLASS`）——这一点很关键：
+ * 线条归属格子，就能跟着格子走。容器一旦自己铺底或描边，格子排不满时右边会拖出
+ * 一段空灰或一条多出来的框。
+ *
+ * 固定宽 + `flex-wrap`，不用 `grid` + `1fr`：`1fr` 会把每格拉到填满整行，六个读数
+ * 摊在一米宽的面板上，值就漂到格子另一头、与自己的标签分开。96px 起跳刚好装下
+ * `12.3k` 与「输出 Token」（最长的那个标签）；窄容器里自动换行——换行后第二行首列
+ * 会留下一条前导线，这是对的：那一行确实是在接着上一行的列往下排，线不该在这里断掉。
+ */
+const DIAGNOSTIC_METRIC_STRIP_CLASS = 'flex flex-wrap gap-y-3'
+
+const DIAGNOSTIC_TONE_CLASS_NAMES: Record<NonNullable<MetricCardProps['tone']>, string> = {
+  default: 'text-text-primary',
+  success: 'text-text-success',
+  destructive: 'text-text-destructive',
+}
+
+function DiagnosticMetric(props: MetricCardProps) {
+  const empty = props.value === '—'
+  return (
+    <div data-slot="diagnostic-metric" className={DIAGNOSTIC_METRIC_CLASS}>
+      <div className="system-2xs-medium-uppercase text-text-tertiary">{props.label}</div>
+      <div
+        className={cn(
+          'mt-0.5 truncate font-mono system-sm-medium tabular-nums',
+          empty ? 'text-text-quaternary' : DIAGNOSTIC_TONE_CLASS_NAMES[props.tone ?? 'default'],
+        )}
+      >
+        {props.value}
+      </div>
+    </div>
+  )
+}
+
+/**
  * 展开体：先给一排指标块，再给逐轮。
  *
  * 为什么两段都要：多轮诊断的结论是「全部轮次都成功才算成功」，所以只看逐轮列表
@@ -552,8 +606,7 @@ function TaskCell(props: TaskCellProps) {
  *
  * 汇总这里**故意用指标块而不是一句结论**：诊断要回答的是「首字多快、出字多快、
  * 用量多少」这几件互相独立的事，写成一句话就只能挑一件说；摊成格子之后每个数各有
- * 各的位置，与请求详情里那张卡也是同一种东西——排查时从一条请求跳到一次诊断，
- * 读数的地方不该换个样子。
+ * 各的位置。
  *
  * 明细里不重复「渠道 / 模型 / 协议」——它们就在正上面那一行，重复一遍只是把
  * 一张小表拉长。
@@ -593,8 +646,8 @@ function TaskDetail(props: TestTaskDetailProps) {
      * 而不是外框一圈再叠一块灰底。
      */
     <div className="col-span-full">
-      <div className={METRIC_CARD_GRID_CLASS}>
-        {metrics.map(metric => <MetricCard key={metric.label} {...metric} />)}
+      <div className={DIAGNOSTIC_METRIC_STRIP_CLASS}>
+        {metrics.map(metric => <DiagnosticMetric key={metric.label} {...metric} />)}
       </div>
 
       <div className="mt-3 border-t border-border/50 pt-1.5">

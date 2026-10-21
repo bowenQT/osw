@@ -6,28 +6,13 @@ import { cn } from '@/lib/utils'
  * 它与 `metric-grid.tsx` 的 `MetricGrid` 不是同一种东西，两者也不该合并：
  * `MetricGrid` 是页面顶部的**总览卡**，一格占一张卡、数值用 `system-xl-semibold`，
  * 读法是「先扫四张大数字」；这里的格子是**详情卡内部的嵌套模块**，数值只有
- * `system-sm-medium`、标签是小号大写，读法是「在一张卡里并排比对一串读数」。
+ * `system-md-medium`、标签是小号大写，读法是「在一张卡里并排比对一串读数」。
  * 把总览卡的尺寸搬进详情，展开区会立刻比它所属的那一行更重。
  *
  * 只有两行，不加第三行补充说明：「缓存是否命中」这类上下文在各自的原始数据里
  * 都已有落点，在数值底下再写一遍只会稀释数字本身。空值走最淡的一档灰，
  * 让有数字的格子自己浮出来。
- *
- * **用一条竖线把自己和前一列隔开，不用底色、也不用四边围框。**
- *
- * 三条路都试过了：描一圈 1px 的框，一排六枚就是二十四条细线，读者先看到的是网格；
- * 每枚格子铺一块灰底，展开区本来就在白卡里，再铺一层就是一整片灰——这正是「灰灰的
- * 背景」被讨厌的原因；把灰底上提到容器做成通栏底带更糟，格子只有左边一段时右端会
- * 拖出一段没内容的灰（实测容器 746px、六枚 96px 格子共 680px）。
- *
- * 留下的是「只有列间一条线」：线条没有消失，而是只画在读者真需要分界的地方。
- * 六枚读数是一条横向数据的六列，竖线就是列与列的语言；横向上不需要边界（容器
- * 对齐已经说明开始了），于是首列不画线。层次交给排版：标签 11px 大写灰、
- * 值 13px 等宽深色。
  */
-
-/** 一枚格子的宽度：装得下最长的标签（「输出 Token」）与最长的值（`12.3k`）。 */
-const METRIC_CARD_CLASS = 'min-w-24 shrink-0 border-l border-border pl-3 first:border-l-0 first:pl-0'
 export interface MetricCardProps {
   label: string
   value: string
@@ -50,11 +35,11 @@ export function MetricCard(props: MetricCardProps) {
   const empty = props.value === '—'
 
   return (
-    <div data-slot="metric-card" className={METRIC_CARD_CLASS}>
-      <div className="system-2xs-medium-uppercase text-text-tertiary">{props.label}</div>
+    <div data-slot="metric-card" className="rounded-lg border border-module-border px-3 py-2.5">
+      <div className="system-2xs-medium-uppercase tracking-wider text-text-tertiary">{props.label}</div>
       <div
         className={cn(
-          'mt-0.5 truncate font-mono system-sm-medium tabular-nums',
+          'mt-1 truncate font-mono system-md-medium tabular-nums',
           empty ? 'text-text-quaternary' : TONE_CLASS_NAMES[props.tone ?? 'default'],
         )}
       >
@@ -65,16 +50,15 @@ export function MetricCard(props: MetricCardProps) {
 }
 
 /**
- * 装一排指标格的容器：**只排行距，横向上不进任何背景**。
+ * 装一排指标格的网格。
  *
- * 列间的线由格子自己的 `border-l` 画（见 `METRIC_CARD_CLASS`）——这一点很关键：
- * 线条归属格子，就能跟着格子走。容器一旦自己铺底或描边，格子排不满时右边会
- * 拖出一段空白的灰带或一条多出来的框。
+ * `auto-fill`（而非 `auto-fit`）：只有一两个指标有值时也让格子保持统一宽度，
+ * 不被拉满整行——拉满之后「这里少了一格」这件事反而看不出来了。
  *
- * 固定宽 + `flex-wrap`，不用 `grid` + `1fr`：`1fr` 会把每格拉到填满整行，六个读数
- * 摊在一米宽的面板上，值就漂到格子另一头、与自己的标签分开。96px 起跳刚好装下
- * `12.3k` 与「输出 Token」（最长的那个标签），一排六枚只占左边一小段；窄容器里
- * 自动换行——换行后第二行首列会留下一条前导线，这是对的：那一行确实是在接着
- * 上一行的列往下排，线不该在这里断掉。
+ * 这套「自带一圈框、各自成块」的读法只属于**请求详情**：那边每一枚都是一个独立
+ * 嵌套模块，块与块之间本来就该有间隔。诊断明细走的是另一套（一排无缝的读数、
+ * 只靠列间竖线分界，见 `model-test-panel.tsx` 的 `DiagnosticMetric`）——一次诊断
+ * 的六个读数读的是同一条结果的六个侧面，分成六块反而把一件事拆成了六件。
+ * 两者刻意不合并，别为了「统一」把它们改成一样。
  */
-export const METRIC_CARD_GRID_CLASS = 'flex flex-wrap gap-y-3'
+export const METRIC_CARD_GRID_CLASS = 'grid grid-cols-[repeat(auto-fill,minmax(132px,1fr))] gap-2'
