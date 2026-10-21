@@ -18,7 +18,7 @@
   "pages/overview/components/latency-distribution.tsx": 2,
   "pages/overview/components/trend-chart.tsx": 1,
   "pages/overview/components/usage-heat-grid.tsx": 1,
-  "pages/request-logs/components/request-contents-sheet.tsx": 4,
+  "pages/request-logs/components/request-contents-sheet.tsx": 0,
   "pages/request-logs/components/request-execution-detail.tsx": 2,
   "pages/request-logs/components/request-log-detail-row.tsx": 3,
   "pages/request-logs/components/request-logs-table.tsx": 1,
