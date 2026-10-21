@@ -2,6 +2,7 @@ import * as React from 'react'
 import { enUS, zhCN } from 'react-day-picker/locale'
 import type { DateRange } from 'react-day-picker'
 import { CalendarRange } from 'lucide-react'
+import { shiftLocalCalendarDays } from '@/lib/calendar-day'
 import { cn } from '@/lib/utils'
 import { Calendar } from '@/components/ui/calendar'
 import { Button } from '@/components/ui/button'
@@ -34,15 +35,12 @@ interface DateRangePickerProps {
   className?: string
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000
-
 /** 语言 → 日历标签（月份、星期、翻页按钮的 aria 文案）。 */
 const CALENDAR_LOCALES = { en: enUS, 'zh-CN': zhCN } as const
 
 /** 到「当天本地零点」。用年月日构造而不是 `setHours(0,0,0,0)`，后者在夏令时切换当天会偏一小时。 */
 function startOfDay(timestamp: number): number {
-  const date = new Date(timestamp)
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+  return shiftLocalCalendarDays(timestamp, 0)
 }
 
 function formatDay(timestamp: number, locale: string): string {
@@ -92,7 +90,8 @@ export function DateRangePicker(props: DateRangePickerProps) {
 
   function applyPreset(days: number) {
     const end = startOfDay(Date.now())
-    props.onChange({ from: startOfDay(end - days * DAY_MS), to: end })
+    // `days` 是再往前几个日历日。减 `days * 24h` 在春令时会落到再前一天。
+    props.onChange({ from: shiftLocalCalendarDays(end, -days), to: end })
     setOpen(false)
   }
 

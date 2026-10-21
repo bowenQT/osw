@@ -119,6 +119,21 @@ export const useLogsUiStore = scratch.store   // scratch = createPageScratchStor
 
 新增约束前先问：这条规则的每个命中，是不是都真的是缺陷？如果不是，改规则，不要改代码。
 
+### 第二条闸门：视图层不许再长逻辑
+
+上面那条管的是 import，管不到另一件更常见的事：**一段纯逻辑直接写进 `.tsx`**。它不违反任何 import 规则——`getTestableProtocols()` 在 `components/model-test-panel.tsx` 里算了很久，直到要把同一套判断搬到 CLI 或托盘上，才发现它跟一个具体组件长在了一起。
+
+`packages/console/scripts/check-console-view-purity.mjs` 守这个特征，同样挂在 `pnpm lint` 与 `pnpm lint:layers` 上：
+
+| 规则 | 判据 | 违反时 |
+| --- | --- | --- |
+| 视图不持有模块级状态 | `.tsx` 里不得出现模块作用域的 `let` / `var` | 失败，并指出变量名 |
+| 逻辑单元只准降不准升 | 每个 `.tsx` 的模块作用域普通函数（小写名、非 `useXxx`）不超过 `scripts/view-logic-budget.json` 记的数；**新文件按 0 起算** | 失败，列出全部函数名并指向 `lib/` |
+
+逻辑单元用账本而不是一律归零：现存那几十个一行格式化函数是历史，一次搬完是无关重构，而且会让这条规则在落地当天就红。账本把现状记下来，数字只准往下改；于是「往组件里再塞一个纯函数」第一次变成会失败的操作——要加逻辑，就去 `lib/` 或页面自己的 `lib/` 加，并顺手补一个不渲染 React 的单测。
+
+参考实现在 `lib/model-test/`（`selection` / `results` / `config`）：它们从 `components/model-test-panel.tsx` 里搬出来，面板只剩渲染与 props 订阅，三份测试的 52 条断言全部不挂组件树。
+
 ## 6. 参考实现
 
 | 主题 | 位置 |
@@ -130,6 +145,7 @@ export const useLogsUiStore = scratch.store   // scratch = createPageScratchStor
 | 共享队列 | `lib/task-queue.ts` |
 | 本机偏好的持久化 | `store/persisted-store.ts`（唯一实现）+ `store/app-ui-store.ts`、`i18n/store.ts`、`store/model-test-config.ts` |
 | 页面临时数据 | `store/page-scratch.ts`（`persisted-store` 之上的薄封装）+ `pages/logs/store.ts`、`pages/request-logs/store.ts`、`pages/model-management/store.ts` |
-| 护栏本体 | `packages/console/scripts/check-console-layers.mjs` |
+| 纯逻辑与组件分家 | `lib/model-test/selection.ts`、`results.ts`、`config.ts` + 同名测试（从 `components/model-test-panel.tsx` 搬出） |
+| 护栏本体 | `packages/console/scripts/check-console-layers.mjs`、`check-console-view-purity.mjs` + `view-logic-budget.json` |
 
 页面清单与侧边栏分组仍以 `components/app-sidebar.tsx` 为准（见 [desktop.md](./desktop.md)）；技术栈与构建见 [tech-architecture.md](./tech-architecture.md)。

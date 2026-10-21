@@ -342,4 +342,34 @@ describe('request rewrite rule routes', () => {
     expect(responseData(res)).toMatchObject({ success: false, errorCode: 'TRANSPORT_NOT_IMPLEMENTED' })
     expect(res.statusCode).toBe(400)
   })
+
+  /**
+   * 试跑的正文和 headers 都是编辑器文本框的原文，半截 JSON 很常见。
+   * `JSON.parse` 抛出的 `SyntaxError` 不是 `AppError`，边界会把它收成 500
+   * 「Internal server error」。这是输入问题，要回 400 `VALIDATION_ERROR`，并点名是哪一个字段。
+   */
+  it.each([
+    { field: 'body', body: '{', headers: '{}', errorMessage: 'Test case body is not valid JSON' },
+    { field: 'headers', body: '{"hello":"world"}', headers: '{', errorMessage: 'Test case headers are not valid JSON' },
+  ])('rejects a dry-run whose $field is not valid JSON', async ({ body, headers, errorMessage }) => {
+    const res = mockResponse()
+    await requestRewriteRuleRoutes.invoke('/api/request-rewrite-rule/test', res, {
+      rule: {
+        id: 'rule_bad_json', name: 'x', description: '', enabled: true, global: true, source: 'user',
+        match: { clientProtocols: [], upstreamProtocols: [] }, schemaVersion: 1,
+        actions: [{ type: 'header-set', stage: 'request', name: 'x-a', value: 'a' }],
+        testCases: [], createdTime: 0, updatedTime: 0, deletedTime: null,
+      },
+      testCase: {
+        stage: 'request',
+        body,
+        headers,
+        clientProtocol: 'openai-completions',
+        upstreamProtocol: 'openai-completions',
+        transport: 'http',
+      },
+    })
+    expect(res.statusCode).toBe(400)
+    expect(responseData(res)).toEqual({ success: false, errorCode: 'VALIDATION_ERROR', errorMessage })
+  })
 })

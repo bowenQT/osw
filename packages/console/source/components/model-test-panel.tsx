@@ -18,8 +18,7 @@ import {
 import { cacheHitRate, formatMilliseconds, formatOutputSpeed, formatTokenCount } from '@common/metrics'
 import { ALL_MODEL_TEST_MODES, type ModelTestMode, type Protocol, type Provider, type ProviderModelRoute } from '@common/schemas'
 import type { UiCatalogKey } from '@common/i18n/catalogs'
-import { CONVERTIBLE_PROTOCOLS, PROTOCOL_DISPLAY_NAMES } from '@common/protocols'
-import type { ModelTestResult, ModelTestRoundResult } from '@common/diagnostics'
+import { PROTOCOL_DISPLAY_NAMES } from '@common/protocols'
 import { InlineEmptyState } from '@/components/inline-empty-state'
 import { FormRow } from '@/components/form-kit'
 import { MetricCard, type MetricCardProps } from '@/components/metric-card'
@@ -39,7 +38,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { useTranslation, type AppTranslator } from '@/i18n/provider'
+import { useTranslation } from '@/i18n/provider'
 import { formatPercent } from '@/lib/format-percent'
 import {
   Dialog,
@@ -49,6 +48,33 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { clampConfigNumber } from '@/lib/model-test/config'
+import {
+  buildPlannedTasks,
+  buildSelectionView,
+  clearAllTasks,
+  getProtocolSegmentClassName,
+  isEveryTaskSelected,
+  pruneModelProtocolSelection,
+  pruneProviderSelection,
+  selectEveryTask,
+  toggleModelSelection,
+  toggleProtocolSelection,
+  toggleProviderSelection,
+  type ModelProtocolSelection,
+} from '@/lib/model-test/selection'
+import {
+  getResultRounds,
+  getRoundSuccessRate,
+  getTaskDurationLabel,
+  getTaskSpeedLabel,
+  getTaskStatusClassName,
+  getTaskStatusTitle,
+  getTaskTokenLabel,
+  getTaskTtftLabel,
+  getVisibleTestTasks,
+  summarizeTestTasks,
+} from '@/lib/model-test/results'
 import { useModelTestRunner } from '@/pages/model-management/hooks/use-model-test-runner'
 import type { TestTask, TestTaskStatus } from '@/pages/model-management/lib/model-test-runner'
 import { useModelTestConfigStore, type TestConfig } from '@/store/model-test-config'
@@ -95,27 +121,6 @@ const TASK_GRID_COLUMNS = 'md:grid-cols-[20px_minmax(150px,1.4fr)_minmax(120px,0
  */
 const ROUND_GRID_COLUMNS = 'md:grid-cols-[68px_56px_68px_80px_80px_76px_92px]'
 
-/**
- * 逐轮记录的**唯一来源**：新服务端给 `result.rounds`，老服务端只给一条总账。
- *
- * 两种都要能展开，所以老数据就地补成「第 1 轮」——用同一条渲染路径，不写两套明细表，
- * 也不因为服务端版本不同而让「点开看看」有时有内容、有时空白。
- */
-function getResultRounds(result: ModelTestResult): ModelTestRoundResult[] {
-  if (result.rounds?.length) return result.rounds
-  return [{
-    round: 1,
-    success: result.success,
-    statusCode: result.statusCode,
-    durationMilliseconds: result.durationMilliseconds,
-    errorMessage: result.errorMessage,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
-    ttftMilliseconds: result.ttftMilliseconds,
-    tokensPerSecond: result.tokensPerSecond,
-  }]
-}
-
 const TEST_MODE_LABEL_KEYS: Record<ModelTestMode, UiCatalogKey> = {
   streaming: 'modelTest.mode.streaming',
   speed: 'modelTest.mode.speed',
@@ -132,31 +137,6 @@ const TASK_STATUS_LABEL_KEYS: Record<TestTaskStatus, UiCatalogKey> = {
   success: 'modelTest.status.success',
   failed: 'modelTest.status.failed',
   cancelled: 'modelTest.status.cancelled',
-}
-
-function getTestableProtocols(model: ProviderModelRoute): Protocol[] {
-  const protocols = new Set(model.endpoints.map(endpoint => endpoint.protocol))
-  for (const endpoint of model.endpoints) {
-    if (!endpoint.protocolConversionEnabled) continue
-    for (const protocol of CONVERTIBLE_PROTOCOLS[endpoint.protocol]) protocols.add(protocol)
-  }
-  return [...protocols]
-}
-
-function supportsConvertedProtocol(model: ProviderModelRoute, protocol: Protocol): boolean {
-  return !model.endpoints.some(endpoint => endpoint.protocol === protocol)
-    && model.endpoints.some(endpoint => endpoint.protocolConversionEnabled && CONVERTIBLE_PROTOCOLS[endpoint.protocol].includes(protocol))
-}
-
-interface ProtocolSegmentState {
-  converted: boolean
-  selected: boolean
-}
-
-interface ProtocolSegmentLabelOptions {
-  converted: boolean
-  protocol: Protocol
-  t: AppTranslator
 }
 
 /**
@@ -182,57 +162,9 @@ const PROTOCOL_TRACK_CLASS = 'inline-flex flex-wrap items-stretch gap-0.5 rounde
  * `OpenAI Responses`，这里写着 `Responses`，读者得自己判断它们是不是同一个东西。
  * 省字的地方用换行解决，不用减字。
  *
- * 三态各有各的长相，不再靠同一个形状换底色：
- * - 选中：抬起成 `bg-card` + 主文色（凹槽里唯一浮起来的东西）。
- * - 未选中：只给文字，连底色都不给——给每个分段铺一层浅底会在列里排出七个灰方块。
- * - 转换（`converted`）：warning 色 + `Repeat` 记号。整条槽里最该被注意的是它，
- *   因为它意味着请求会被改写，而不是照原样送出去。
+ * 三态（选中 / 未选中 / 转换）各自的长相与配色是一张纯映射表，住在
+ * `@/lib/model-test/selection`：哪个状态长什么样，可以脱开渲染直接断言。
  */
-function getProtocolSegmentClassName(state: ProtocolSegmentState): string {
-  if (state.converted) {
-    return state.selected
-      ? 'bg-warning/15 text-text-warning'
-      : 'text-text-warning hover:bg-warning/10'
-  }
-  if (state.selected) return 'bg-card text-text-primary'
-  return 'text-text-tertiary hover:bg-state-base-hover hover:text-text-primary'
-}
-
-function getProtocolSegmentLabel(options: ProtocolSegmentLabelOptions): string {
-  const label = PROTOCOL_DISPLAY_NAMES[options.protocol]
-  return options.converted ? options.t('protocol.conversion.aria', { protocol: label }) : label
-}
-
-/**
- * 输出列只放**上游报出来的输出 Token**。
- *
- * 没报就是没报：写 `—`，不补一个 `0`——「上游没说」和「一个字都没出」是两件事，
- * 按 0 展示会把前者算进后者的口径里。输出速度列的分母与它同源，两列并排读得通。
- */
-function getTaskTokenLabel(task: TestTask): string {
-  return task.result ? formatTokenCount(task.result.outputTokens) : '—'
-}
-
-function getTaskDurationLabel(task: TestTask): string {
-  return task.result ? formatMilliseconds(task.result.durationMilliseconds) : '—'
-}
-
-/** 首字耗时只量得到流式，而这三种协议诊断都是流式；真没拿到首字就写 `—`，不编一个 0。 */
-function getTaskTtftLabel(task: TestTask): string {
-  return task.result ? formatMilliseconds(task.result.ttftMilliseconds) : '—'
-}
-
-/**
- * 速度是派生值（输出 Token ÷ 耗时），两种模式都会算出来，所以这里不做「这个模式没有速度」
- * 的判断——有没有值只取决于上游给没给用量。读数的含义随模式变：`streaming` 的提示词只有
- * 一个词，比值主要由首字等待决定；要看稳态出字速度得切到速度诊断。
- */
-function getTaskSpeedLabel(task: TestTask): string {
-  if (!task.result) return '—'
-  const speed = formatOutputSpeed(task.result.tokensPerSecond)
-  return speed === '—' ? '—' : `${speed} t/s`
-}
-
 interface ProtocolSegmentProps {
   converted: boolean
   disabled: boolean
@@ -281,45 +213,14 @@ interface ModelSelectionProps {
 function ModelSelection(props: ModelSelectionProps) {
   const t = useTranslation()
   const [query, setQuery] = useState('')
-  const normalizedQuery = query.trim().toLocaleLowerCase()
-  const providerViews = useMemo(() => props.availableProviders.map(provider => {
-    const selected = props.selectedProviderIds.has(provider.id)
-    const models = props.enabledModels
-      .filter(model => model.providerId === provider.id)
-      .filter(model => !normalizedQuery
-        || provider.name.toLocaleLowerCase().includes(normalizedQuery)
-        || model.modelName.toLocaleLowerCase().includes(normalizedQuery))
-      .map(model => {
-        const protocols = getTestableProtocols(model)
-        const selectedProtocols = props.selectedModelProtocols[model.id] ?? new Set(protocols)
-        const selectedCount = protocols.filter(protocol => selectedProtocols.has(protocol)).length
-        return {
-          model,
-          selectedCount,
-          /*
-           * 「整行」的勾选态由协议逐个求和得来，不另存一份。
-           * 一份状态两处表达，迟早会出现「行说全选、药丸只剩两个」的对不上。
-           */
-          selected: protocols.length > 0 && selectedCount === protocols.length,
-          indeterminate: selectedCount > 0 && selectedCount < protocols.length,
-          protocols: protocols.map(protocol => {
-            const converted = supportsConvertedProtocol(model, protocol)
-            return {
-              protocol,
-              converted,
-              selected: selectedProtocols.has(protocol),
-              title: getProtocolSegmentLabel({ converted, protocol, t }),
-            }
-          }),
-        }
-      })
-    return {
-      provider,
-      selected,
-      models,
-      selectedCount: models.filter(model => model.selectedCount > 0).length,
-    }
-  }).filter(view => view.models.length > 0), [normalizedQuery, props.availableProviders, props.enabledModels, props.selectedModelProtocols, props.selectedProviderIds, t])
+  const providerViews = useMemo(() => buildSelectionView({
+    providers: props.availableProviders,
+    models: props.enabledModels,
+    providerIds: props.selectedProviderIds,
+    modelProtocols: props.selectedModelProtocols,
+    query,
+    t,
+  }), [query, props.availableProviders, props.enabledModels, props.selectedModelProtocols, props.selectedProviderIds, t])
 
   return (
     <aside className="flex min-h-0 flex-col border-b border-border/60 bg-card lg:border-r lg:border-b-0">
@@ -505,27 +406,6 @@ interface TaskCellProps {
   children: React.ReactNode
 }
 
-/** 状态词的配色：成功绿、失败红、进行中主文色、取消与排队退到灰。 */
-function statusTextClassName(status: TestTaskStatus): string {
-  if (status === 'success') return 'text-text-success'
-  if (status === 'failed') return 'text-text-destructive'
-  if (status === 'running') return 'text-text-primary'
-  if (status === 'cancelled') return 'text-text-tertiary'
-  return 'text-text-quaternary'
-}
-
-/**
- * 状态格的 `title`：把「上游到底回了什么」补上。
- *
- * 格子里只印短短的「失败」，因为状态列要能一眼竖着扫下来；HTTP 码是查错时的第一手
- * 线索（401 与 429 的处置完全不同），所以它退到悬浮提示里，不占列宽。
- * 错误原文本来就在行下方那条红框里，不必在这里再抄一遍。
- */
-function getTaskStatusTitle(task: TestTask, statusLabel: string): string {
-  if (!task.result?.statusCode) return statusLabel
-  return `${statusLabel} · HTTP ${task.result.statusCode}`
-}
-
 /**
  * 结果行里的一格数据。
  *
@@ -575,7 +455,7 @@ function TaskDetail(props: TestTaskDetailProps) {
   const result = props.task.result!
   const rounds = getResultRounds(result)
   const successCount = rounds.filter(round => round.success).length
-  const successRate = Math.round((successCount / rounds.length) * 100)
+  const successRate = getRoundSuccessRate(rounds)
   // 汇总值一律取服务端的 `result`（`summarizeRounds` 是唯一定义处），不在这里重算——
   // 界面再算一遍，同一个渠道就会在服务端日志和这张卡上有两个数。
   const speed = formatOutputSpeed(result.tokensPerSecond)
@@ -724,7 +604,7 @@ function TestTaskRow(props: TestTaskRowProps) {
       <TaskCell labelKey="modelTest.table.status">
         <span
           title={getTaskStatusTitle(task, statusLabel)}
-          className={cn('inline-flex items-center gap-1 system-2xs-medium', statusTextClassName(task.status))}
+          className={cn('inline-flex items-center gap-1 system-2xs-medium', getTaskStatusClassName(task.status))}
         >
           {statusLabel}
         </span>
@@ -785,7 +665,6 @@ interface ConfigNumberRowProps {
  */
 function ConfigNumberRow(props: ConfigNumberRowProps) {
   const t = useTranslation()
-  const clamp = (value: number) => Math.max(props.min, Number.isFinite(value) ? Math.trunc(value) : props.min)
   return (
     <FormRow
       title={props.title}
@@ -797,7 +676,7 @@ function ConfigNumberRow(props: ConfigNumberRowProps) {
             size="icon-sm"
             disabled={props.value <= props.min}
             aria-label="-"
-            onClick={() => props.onChange(clamp(props.value - 1))}
+            onClick={() => props.onChange(clampConfigNumber(props.value - 1, props.min))}
           >
             <span aria-hidden className="text-base leading-none">−</span>
           </Button>
@@ -807,14 +686,14 @@ function ConfigNumberRow(props: ConfigNumberRowProps) {
             min={props.min}
             value={props.value}
             aria-label={props.title}
-            onChange={event => props.onChange(clamp(event.target.valueAsNumber))}
+            onChange={event => props.onChange(clampConfigNumber(event.target.valueAsNumber, props.min))}
             className="h-7 w-20 rounded-md border border-border bg-components-input-bg-normal px-1 text-center font-mono system-2xs-regular tabular-nums text-text-primary outline-none focus-visible:border-primary"
           />
           <Button
             variant="outline"
             size="icon-sm"
             aria-label="+"
-            onClick={() => props.onChange(clamp(props.value + 1))}
+            onClick={() => props.onChange(clampConfigNumber(props.value + 1, props.min))}
           >
             <span aria-hidden className="text-base leading-none">+</span>
           </Button>
@@ -910,7 +789,7 @@ export function ModelTestPanel(props: ModelTestPanelProps) {
     () => props.providers.filter(provider => enabledModels.some(model => model.providerId === provider.id)),
     [enabledModels, props.providers],
   )
-  const [selectedModelProtocols, setSelectedModelProtocols] = useState<Record<string, Set<Protocol>>>({})
+  const [selectedModelProtocols, setSelectedModelProtocols] = useState<ModelProtocolSelection>({})
   const [selectedProviderIds, setSelectedProviderIds] = useState<Set<string>>(new Set())
   /**
    * 结果表与执行器。
@@ -960,42 +839,11 @@ export function ModelTestPanel(props: ModelTestPanelProps) {
 
     setSelectedModelProtocols(current => {
       if (isOpening) return Object.keys(current).length === 0 ? current : {}
-      let changed = false
-      const next: Record<string, Set<Protocol>> = {}
-      for (const model of enabledModels) {
-        const previous = current[model.id]
-        /*
-         * 没有显式选择的模型**不落条目**。
-         *
-         * 这里曾经写成 `current[model.id] ?? []` 再存回去，等于给每个模型materialize
-         * 一个空集；而 `plannedTasks` 的默认值是「没存过就全部可测协议」
-         * （`selectedModelProtocols[id] ?? getTestableProtocols(model)`）。
-         * 空集不是「没存过」，它绕过了那个默认值——于是所有模型的协议被清空、
-         * 待测计划归零、「开始诊断」永久变灰，点它当然毫无反应。
-         *
-         * 触发条件并不罕见：这个 effect 的依赖里带着 `enabledModels`，而模型列表每
-         * 30 秒轮询一次（引用每次都新）。StrictMode 更直接——它挂载后立刻把 effect
-         * 再跑一遍，面板一打开就中招。
-         *
-         * 「用户主动取消了全部协议」是另一回事：那时 `previous` 存在（就是空集），
-         * 该保留，所以按「有没有条目」区分，而不是按「是不是空集」区分。
-         */
-        if (!previous) continue
-        const kept = new Set([...previous].filter(protocol => getTestableProtocols(model).includes(protocol)))
-        // `kept` 是 `previous` 的子集，长度相同就意味着一个都没被剔掉，可以沿用原 Set 引用。
-        if (kept.size === previous.size) next[model.id] = previous
-        else {
-          next[model.id] = kept
-          changed = true
-        }
-      }
-      if (Object.keys(next).length !== Object.keys(current).length) changed = true
-      return changed ? next : current
+      return pruneModelProtocolSelection(enabledModels, current)
     })
     setSelectedProviderIds(current => {
       if (isOpening) return current.size === 0 ? current : new Set()
-      const next = new Set([...current].filter(providerId => availableProviders.some(provider => provider.id === providerId)))
-      return next.size === current.size ? current : next
+      return pruneProviderSelection(availableProviders, current)
     })
     if (isOpening) {
       clear()
@@ -1010,40 +858,20 @@ export function ModelTestPanel(props: ModelTestPanelProps) {
     }
   }, [props.open, enabledModels, availableProviders, clear])
 
-  const plannedTasks = useMemo<readonly TestTask[]>(() => enabledModels.flatMap(model => {
-    if (!selectedProviderIds.has(model.providerId)) return []
-    const provider = props.providers.find(item => item.id === model.providerId)
-    if (!provider) return []
-    const selectedProtocols = selectedModelProtocols[model.id] ?? new Set(getTestableProtocols(model))
-    return getTestableProtocols(model).filter(protocol => selectedProtocols.has(protocol)).map(protocol => ({
-      id: `${model.id}:${protocol}`,
-      modelId: model.id,
-      modelName: model.modelName,
-      providerId: provider.id,
-      providerName: provider.name,
-      protocol,
-      converted: supportsConvertedProtocol(model, protocol),
-      status: 'queued' as const,
-    }))
-  }), [enabledModels, props.providers, selectedModelProtocols, selectedProviderIds])
+  const plannedTasks = useMemo<readonly TestTask[]>(
+    () => buildPlannedTasks(enabledModels, props.providers, selectedProviderIds, selectedModelProtocols),
+    [enabledModels, props.providers, selectedModelProtocols, selectedProviderIds],
+  )
 
   const hasResults = tasks.length > 0
   /** 没有可测目标时「开始诊断」与右侧的模式箭头一起变灰：它是同一个控件的两半。 */
   const startDisabled = plannedTasks.length === 0
-  const successCount = tasks.filter(task => task.status === 'success').length
-  const failureCount = tasks.filter(task => task.status === 'failed').length
-  const cancelledCount = tasks.filter(task => task.status === 'cancelled').length
-  const completedCount = successCount + failureCount + cancelledCount
-  const progress = tasks.length === 0 ? 0 : Math.round((completedCount / tasks.length) * 100)
+  const { successCount, failureCount, cancelledCount, completedCount, progress } = summarizeTestTasks(tasks)
   /**
-   * 重测成功后失败数会归零，此时不能再停留在「只看失败」上——否则表格会空白，
-   * 而失败行其实已经变绿了。所以筛选生效与否是推导出来的，不写回 state。
+   * 可见行与「只看失败是否生效」都由 lib 推导：重测成功后失败数归零时筛选自动失效，
+   * 而不是留一张空白表（`getVisibleTestTasks` 的注释里有完整理由）。
    */
-  const showFailedOnly = failedOnly && failureCount > 0
-  const visibleTasks = hasResults
-    ? showFailedOnly ? tasks.filter(task => task.status === 'failed') : tasks
-    : plannedTasks
-  const visibleTotal = hasResults ? tasks.length : plannedTasks.length
+  const { tasks: visibleTasks, total: visibleTotal, failedOnlyActive: showFailedOnly } = getVisibleTestTasks(tasks, plannedTasks, failedOnly)
 
   /** 清空结果表，并一并复位与结果绑定的视图状态（筛选、展开）。 */
   const clearTasks = () => {
@@ -1062,70 +890,31 @@ export function ModelTestPanel(props: ModelTestPanelProps) {
   }
   const toggleModelProtocol = (modelId: string, protocol: Protocol) => {
     if (running) return
-    setSelectedModelProtocols(current => {
-      const next = { ...current }
-      /*
-       * 起点必须是**行上显示的那个默认**（全部可测协议），不能是空集。
-       * 面板刚打开时没有任何显式选择，而模型行已经把三个分段都画成选中、右侧也写着
-       * `3/3 协议`；此时从空集开始就差一个，第一下点击会静默地把另外两个一起取消——
-       * 显示与实际各说一套。没存过就从默认推导一遍，两处永远同源。
-       */
-      const model = enabledModels.find(item => item.id === modelId)
-      const selectedProtocols = new Set(current[modelId] ?? (model ? getTestableProtocols(model) : []))
-      if (selectedProtocols.has(protocol)) selectedProtocols.delete(protocol)
-      else selectedProtocols.add(protocol)
-      next[modelId] = selectedProtocols
-      return next
-    })
+    setSelectedModelProtocols(current => toggleProtocolSelection(enabledModels, current, modelId, protocol))
     clearTasks()
   }
 
   const toggleProvider = (providerId: string) => {
     if (running) return
-    setSelectedProviderIds(current => {
-      const next = new Set(current)
-      if (next.has(providerId)) next.delete(providerId)
-      else next.add(providerId)
-      return next
-    })
+    setSelectedProviderIds(current => toggleProviderSelection(current, providerId))
     clearTasks()
   }
 
-  /**
-   * 一次开关一个模型的全部可测协议。
-   *
-   * 满选 / 部分选都归到同一个动作上：满选就清空、其余情况补满——半选时用户的本意
-   * 基本都是「我要这个模型的全部」，而不是「再点一下变成空的」。
-   * 模型走的是 `enabledModels` 而不是某个视图，所以搜索词不影响它勾到几个协议。
-   */
   const toggleModel = (modelId: string) => {
     if (running) return
-    const model = enabledModels.find(item => item.id === modelId)
-    if (!model) return
-    const protocols = getTestableProtocols(model)
-    setSelectedModelProtocols(current => {
-      const selectedProtocols = current[modelId] ?? new Set(protocols)
-      const fullySelected = protocols.length > 0 && protocols.every(protocol => selectedProtocols.has(protocol))
-      return { ...current, [modelId]: new Set(fullySelected ? [] : protocols) }
-    })
+    setSelectedModelProtocols(current => toggleModelSelection(enabledModels, current, modelId))
     clearTasks()
   }
 
-  const allTasksSelected = enabledModels.length > 0
-    && enabledModels.every(model => selectedProviderIds.has(model.providerId)
-      && getTestableProtocols(model).every(protocol => selectedModelProtocols[model.id]?.has(protocol)))
+  const allTasksSelected = isEveryTaskSelected(enabledModels, selectedProviderIds, selectedModelProtocols)
 
   const toggleAll = () => {
     if (running) return
-    if (allTasksSelected) {
-      setSelectedProviderIds(new Set())
-      setSelectedModelProtocols(Object.fromEntries(enabledModels.map(model => [model.id, new Set<Protocol>()])))
-    } else {
-      setSelectedProviderIds(new Set(availableProviders.map(provider => provider.id)))
-      setSelectedModelProtocols(Object.fromEntries(
-        enabledModels.map(model => [model.id, new Set(getTestableProtocols(model))]),
-      ))
-    }
+    const next = allTasksSelected
+      ? clearAllTasks(enabledModels)
+      : selectEveryTask(enabledModels, availableProviders)
+    setSelectedProviderIds(next.providerIds)
+    setSelectedModelProtocols(next.modelProtocols)
     clearTasks()
   }
 
