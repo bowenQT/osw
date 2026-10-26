@@ -43,7 +43,7 @@ jobs:
   # 结果是所有平台都被静默跳过，job 显示 skipped，看不出哪里错了。
   targets:
     name: Resolve targets
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4-ubuntu-2404
     outputs:
       include: ${{ steps.resolve.outputs.include }}
     steps:
@@ -71,7 +71,7 @@ jobs:
             case "$1" in
               macos)   echo '{"name":"macOS","platform":"macos","os":"macos-latest","command":"pnpm release:mac","asset":"release/**/*.dmg\nrelease/**/*.zip"}' ;;
               windows) echo '{"name":"Windows","platform":"windows","os":"windows-latest","command":"pnpm release:win","asset":"release/**/OSW-*.exe"}' ;;
-              linux)   echo '{"name":"Linux","platform":"linux","os":"ubuntu-latest","command":"pnpm release:linux","asset":"release/**/OSW-*.AppImage"}' ;;
+              linux)   echo '{"name":"Linux","platform":"linux","os":"ubicloud-standard-4-ubuntu-2404","command":"pnpm release:linux","asset":"release/**/OSW-*.AppImage"}' ;;
             esac
           }
 
